@@ -9,10 +9,8 @@
 */
 
 import libc
-
-/// Extensions to the libc `stat` structure to interpret the contents in more readable ways.
-extension libc.stat {
-
+//FIXME: Check if this is a COFF limitation
+#if CYGWIN
      /// File system entity kind.
      public enum Kind {
          case file, directory, symlink, fifo, blockdev, chardev, socket, unknown
@@ -30,7 +28,29 @@ extension libc.stat {
              }
          }
      }
+#endif
 
+/// Extensions to the libc `stat` structure to interpret the contents in more readable ways.
+extension libc.stat {
+#if !CYGWIN
+     /// File system entity kind.
+     public enum Kind {
+         case file, directory, symlink, fifo, blockdev, chardev, socket, unknown
+
+         fileprivate init(mode: mode_t) {
+             switch mode {
+                 case S_IFREG:  self = .file
+                 case S_IFDIR:  self = .directory
+                 case S_IFLNK:  self = .symlink
+                 case S_IFBLK:  self = .blockdev
+                 case S_IFCHR:  self = .chardev
+                 case S_IFSOCK: self = .socket
+             default:
+                 self = .unknown
+             }
+         }
+     }
+#endif
      /// Kind of file system entity.
      public var kind: Kind {
          return Kind(mode: st_mode & S_IFMT)

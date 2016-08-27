@@ -115,6 +115,8 @@ if platform.system() == 'Darwin':
 
 if platform.system() == 'Linux':
     g_shared_lib_ext = ".so"
+elif platform.system().startswith('CYGWIN'):
+    g_shared_lib_ext = ".dll"
 else:
     g_shared_lib_ext = ".dylib"
 
@@ -291,7 +293,7 @@ def parse_manifest():
     # we have a *very* strict format for our manifest to make parsing more
     # robust
     pattern = re.compile(
-        r'Target\(.*?name: "(.*?)",\n *dependencies: (\[.*?\])\)',
+        r'Target\(.*?name: "(.*?)",\r?\n? *dependencies: (\[.*?\])\)',
         re.DOTALL | re.MULTILINE)
     manifest_data = codecs.open(os.path.join(g_project_root,
                                 "Package.swift"), encoding='utf-8',
@@ -506,6 +508,9 @@ def create_bootstrap_files(sandbox_path, args):
             print("    description: Link %s" % target.name, file=output)
         else:
             print("    description: Link %s" % link_output_path, file=output)
+            if platform.system().startswith("CYGWIN"):
+                link_command.extend(["-Xlinker", "--allow-multiple-definition"])
+
         print("    inputs: %s" % json.dumps(
             link_input_nodes + objects + linked_libraries), file=output)
         print("    outputs: %s" % json.dumps(
@@ -575,6 +580,11 @@ def process_runtime_libraries(build_path, args, bootstrap=False):
                "-Xlinker", input_lib_path,
                "-Xlinker", "--no-whole-archive", "-lswiftGlibc",
                "-Xlinker", "-rpath=$ORIGIN/../linux"]
+
+        # Change shared object extension and link flags for Cygwin
+        if platform.system().startswith("CYGWIN"):
+            runtime_lib_path = os.path.join(lib_path, "libPackageDescription.dll") 
+            cmd.extend(["-Xlinker", "--allow-multiple-definition"])
 
         # We need to pass one swift file here to bypass the "no input files"
         # error.
@@ -797,6 +807,8 @@ def main():
     # libraries.
     if platform.system() == 'Linux':
         embed_rpath = "$ORIGIN/../lib/swift/linux"
+    elif platform.system().startswith('CYGWIN'):
+        embed_rpath = "$ORIGIN/../lib/swift/cygwin"
     else:
         embed_rpath = "@executable_path/../lib/swift/macosx"
     build_flags.extend(["-Xlinker", "-rpath", "-Xlinker", embed_rpath])

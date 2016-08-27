@@ -47,7 +47,7 @@ public class GitRepositoryProvider: RepositoryProvider {
         do {
             // FIXME: We need infrastructure in this subsystem for reporting
             // status information.
-          #if os(Linux)
+          #if os(Linux) || CYGWIN
             let env = ProcessInfo.processInfo().environment
           #else
             let env = ProcessInfo.processInfo.environment

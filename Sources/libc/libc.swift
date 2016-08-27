@@ -8,8 +8,27 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
-#if os(Linux)
+#if os(Linux) || CYGWIN
 @_exported import Glibc
 #else
 @_exported import Darwin.C
+#endif
+
+#if CYGWIN
+public var stdout : UnsafeMutablePointer<__FILE>! {
+    get {
+		if let reent = __getreent() {
+		    return reent.pointee._stdout
+		}
+		return nil
+	}
+}
+public var stderr : UnsafeMutablePointer<__FILE>! {
+    get {
+		if let reent = __getreent() {
+		    return reent.pointee._stderr
+		}
+		return nil
+	}
+}
 #endif

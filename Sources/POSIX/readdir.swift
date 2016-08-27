@@ -11,7 +11,22 @@
 import libc
 
 extension dirent {
-#if !os(macOS)
+#if CYGWIN
+    public var d_namlen: UInt16 {
+        get {
+            var d_name = self.d_name
+            let name = withUnsafePointer(to: &d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 255) {
+                    String.init(validatingUTF8: $0)
+                }
+            }
+            if name != nil {
+                return UInt16(name!.characters.count)
+            }
+            return 0
+        }
+    }
+#elseif !os(macOS)
     // Add a portability wrapper.
     //
     // FIXME: This should come from the standard library: https://bugs.swift.org/browse/SR-1726

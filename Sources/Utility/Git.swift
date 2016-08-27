@@ -103,7 +103,7 @@ public class Git {
         }
 
         public func fetch() throws {
-#if os(Linux)
+#if os(Linux) || CYGWIN
             try system(Git.tool, "-C", path.asString, "fetch", "--tags", "origin", environment: ProcessInfo.processInfo().environment, message: nil)
 #else
             try system(Git.tool, "-C", path.asString, "fetch", "--tags", "origin", environment: ProcessInfo.processInfo.environment, message: nil)

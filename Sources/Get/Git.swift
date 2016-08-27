@@ -25,7 +25,7 @@ extension Git {
         }
 
         do {
-          #if os(Linux)
+          #if os(Linux) || CYGWIN
             let env = ProcessInfo.processInfo().environment
           #else
             let env = ProcessInfo.processInfo.environment

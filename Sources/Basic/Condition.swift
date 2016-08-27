@@ -11,7 +11,7 @@
 import Foundation
 
 // FIXME: Temporary compatibility shims.
-#if !os(macOS)
+#if !os(macOS) || CYGWIN
 private typealias NSCondition = Foundation.Condition
 #endif
 
