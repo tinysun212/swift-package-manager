@@ -575,15 +575,19 @@ def process_runtime_libraries(build_path, args, bootstrap=False):
         # We include an RPATH entry so that the Swift libraries can be found
         # relative to where it will be installed (in 'lib/swift/pm/...').
         runtime_lib_path = os.path.join(lib_path, "libPackageDescription.so")
+
+        # Change shared object extension for Cygwin
+        if platform.system().startswith("CYGWIN"):
+            runtime_lib_path = os.path.join(lib_path, "libPackageDescription.dll") 
+
         cmd = [args.swiftc_path, "-Xlinker", "-shared", "-o", runtime_lib_path,
                "-Xlinker", "--whole-archive",
                "-Xlinker", input_lib_path,
                "-Xlinker", "--no-whole-archive", "-lswiftGlibc",
                "-Xlinker", "-rpath=$ORIGIN/../linux"]
 
-        # Change shared object extension and link flags for Cygwin
+        # Add link flags for Cygwin
         if platform.system().startswith("CYGWIN"):
-            runtime_lib_path = os.path.join(lib_path, "libPackageDescription.dll") 
             cmd.extend(["-Xlinker", "--allow-multiple-definition"])
 
         # We need to pass one swift file here to bypass the "no input files"
