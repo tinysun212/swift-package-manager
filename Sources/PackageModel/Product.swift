@@ -54,6 +54,8 @@ public class Product {
     // configuration.
 #if os(macOS)
     public static let dynamicLibraryExtension = "dylib"
+#elseif CYGWIN
+    public static let dynamicLibraryExtension = "dll"
 #else
     public static let dynamicLibraryExtension = "so"
 #endif

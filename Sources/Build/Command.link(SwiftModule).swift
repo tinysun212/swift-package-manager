@@ -40,6 +40,8 @@ extension Command {
 
           #if os(macOS)
             args += ["-F", try platformFrameworksPath().asString]
+          #elseif CYGWIN
+            args += ["-Xlinker", "--allow-multiple-definition"]
           #endif
 
         case .Library(.Static):
