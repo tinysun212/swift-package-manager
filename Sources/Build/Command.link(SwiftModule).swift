@@ -50,6 +50,11 @@ extension Command {
             return Command(node: product.targetName, tool: ArchiveTool(inputs: inputs, outputs: outputs))
         }
 
+      #if CYGWIN
+        args += ["-D", "CYGWIN"]
+        args += ["-I", "/usr/include"]
+      #endif
+
         switch product.type {
         case .Library(.Static):
             args.append(outpath.asString)
@@ -72,7 +77,12 @@ extension Command {
             //       parent directory of the first test module we can find.
             let firstTestModule = product.modules.flatMap{$0 as? SwiftModule}.filter{ $0.isTest }.first!
             let testDirectory = firstTestModule.sources.root.parentDirectory
-            let main = testDirectory.appending(component: "LinuxMain.swift")
+          #if CYGWIN
+            let mainFileName = "CygwinMain.swift"
+          #else
+            let mainFileName = "LinuxMain.swift"
+          #endif
+            let main = testDirectory.appending(component: mainFileName)
             args.append(main.asString)
             for module in product.modules {
                 args += module.XccFlags(prefix)

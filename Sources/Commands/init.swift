@@ -172,7 +172,12 @@ final class InitPackage {
     }
     
     private func writeLinuxMain(testsPath: AbsolutePath) throws {
-        try writePackageFile(testsPath.appending(component: "LinuxMain.swift")) { stream in
+      #if CYGWIN
+        let mainFileName = "CygwinMain.swift"
+      #else
+        let mainFileName = "LinuxMain.swift"
+      #endif    
+        try writePackageFile(testsPath.appending(component: mainFileName)) { stream in
             stream <<< "import XCTest\n"
             stream <<< "@testable import \(moduleName)Tests\n\n"
             stream <<< "XCTMain([\n"

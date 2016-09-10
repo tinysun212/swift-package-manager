@@ -25,6 +25,8 @@ extension dirent {
             }
             return 0
         }
+        set {
+        }
     }
 #elseif !os(macOS)
     // Add a portability wrapper.
