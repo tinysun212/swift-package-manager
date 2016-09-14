@@ -12,8 +12,6 @@ import Basic
 import PackageModel
 import Utility
 
-import struct PackageDescription.Version
-
 /// A clone of a repository which is not yet fully loaded.
 ///
 /// Initially we clone into a non-final form because we may need to adjust the
@@ -31,6 +29,9 @@ class RawClone: Fetchable {
         }
         if branch.hasPrefix("v") {
             branch = String(branch.characters.dropFirst())
+        }
+        if branch.contains("@") {
+            branch = branch.components(separatedBy: "@").first!
         }
         return Version(branch)
     }
@@ -103,7 +104,9 @@ class RawClone: Fetchable {
     }
 
     var availableVersions: [Version] {
-        return repo.versions
+        let versions = repo.versions
+        assert(versions == versions.sorted())
+        return versions
     }
 
     var finalName: String {

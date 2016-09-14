@@ -34,7 +34,6 @@ let package = Package(
         Target( name: "Utility", dependencies: ["POSIX", "Basic", "PackageDescription"]),
             // FIXME: We should be kill the PackageDescription dependency above.
         Target( name: "SourceControl", dependencies: ["Basic", "Utility"]),
-        Target( name: "TestSupport", dependencies: ["Basic", "Utility", "POSIX"]),
 
         // MARK: Project Model
         
@@ -44,7 +43,7 @@ let package = Package(
         // MARK: Package Dependency Resolution
         
         Target( name: "Get", dependencies: ["Basic", "PackageDescription", "PackageModel", "PackageLoading"]),
-        Target( name: "PackageGraph", dependencies: ["Basic", "Get", "PackageLoading", "PackageModel"]),
+        Target( name: "PackageGraph", dependencies: ["Basic", "PackageLoading", "PackageModel", "SourceControl", "Utility"]),
         
         // MARK: Package Manager Functionality
         
@@ -53,13 +52,15 @@ let package = Package(
 
         // MARK: Commands
         
-        Target( name: "Commands", dependencies: ["Basic", "Build", "Get", "PackageGraph", "Xcodeproj"]),
+        Target( name: "Commands", dependencies: ["Basic", "Build", "Get", "PackageGraph", "SourceControl", "Xcodeproj"]),
         Target( name: "swift-package", dependencies: ["Commands"]),
         Target( name: "swift-build", dependencies: ["Commands"]),
         Target( name: "swift-test", dependencies: ["Commands"]),
         Target( name: "swiftpm-xctest-helper", dependencies: []),
 
         // MARK: Additional Test Dependencies
+
+        Target( name: "TestSupport", dependencies: ["Basic", "POSIX", "PackageLoading", "Utility"]),
         
         Target( name: "BasicTests", dependencies: ["TestSupport"]),
         Target( name: "BuildTests", dependencies: ["Build", "TestSupport"]),

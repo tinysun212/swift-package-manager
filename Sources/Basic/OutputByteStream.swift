@@ -131,7 +131,7 @@ public class OutputByteStream: TextOutputStream {
             }
 
             let writeUptoIndex = bytes.index(bytes.startIndex, offsetBy: availableBufferSize)
-            // Append whatever we can accomodate.
+            // Append whatever we can accommodate.
             buffer += bytes.prefix(upTo: writeUptoIndex)
 
             writeImpl(buffer)
@@ -171,14 +171,8 @@ public class OutputByteStream: TextOutputStream {
 
     /// Write a string to the buffer (as UTF8).
     public final func write(_ string: String) {
-        // Fast path for contiguous strings. For some reason Swift itself
-        // doesn't implement this optimization: <rdar://problem/24100375> Missing fast path for [UInt8] += String.UTF8View
-        let stringPtrStart = string._contiguousUTF8
-        if stringPtrStart != nil {
-            write(UnsafeBufferPointer(start: stringPtrStart, count: string.utf8.count))
-        } else {
-            write(sequence: string.utf8)
-        }
+        // FIXME(performance): Use `string.utf8._copyContents(initializing:)`.
+        write(sequence: string.utf8)
     }
 
     /// Write a character to the buffer (as UTF8).
@@ -192,7 +186,7 @@ public class OutputByteStream: TextOutputStream {
     }
 
     /// Write an arbitrary streamable to the buffer.
-    public final func write(_ value: Streamable) {
+    public final func write(_ value: TextOutputStreamable) {
         // Get a mutable reference.
         var stream: OutputByteStream = self
         value.write(to: &stream)
@@ -260,7 +254,7 @@ precedencegroup StreamingPrecedence {
 //
 // NOTE: It would be nice to use a protocol here and the adopt it by all the
 // things we can efficiently stream out. However, that doesn't work because we
-// ultimately need to provide a manual overload sometimes, e.g., Streamable, but
+// ultimately need to provide a manual overload sometimes, e.g., TextOutputStreamable, but
 // that will then cause ambiguous lookup versus the implementation just using
 // the defined protocol.
 
@@ -318,7 +312,7 @@ public func <<<(stream: OutputByteStream, value: ByteStreamable) -> OutputByteSt
 }
 
 @discardableResult
-public func <<<(stream: OutputByteStream, value: Streamable) -> OutputByteStream {
+public func <<<(stream: OutputByteStream, value: TextOutputStreamable) -> OutputByteStream {
     stream.write(value)
     return stream
 }

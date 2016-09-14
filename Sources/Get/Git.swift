@@ -8,28 +8,26 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
-import Basic
-import struct PackageDescription.Version
-import func POSIX.realpath
-import func POSIX.getenv
-import enum POSIX.Error
 import class Foundation.ProcessInfo
+
+import Basic
 import Utility
+
+import func POSIX.realpath
+import enum POSIX.Error
 
 extension Git {
     class func clone(_ url: String, to dstdir: AbsolutePath) throws -> Repo {
-        // canonicalize URL
+        // Canonicalize URL.
+        //
+        // FIXME: This is redundant with the same code in the manifest loader.
         var url = url
         if URL.scheme(url) == nil {
             url = try realpath(url)
         }
 
         do {
-          #if os(Linux) || CYGWIN
-            let env = ProcessInfo.processInfo().environment
-          #else
             let env = ProcessInfo.processInfo.environment
-          #endif
             try system(Git.tool, "clone",
                        "--recursive",   // get submodules too so that developers can use these if they so choose
                 "--depth", "10",
