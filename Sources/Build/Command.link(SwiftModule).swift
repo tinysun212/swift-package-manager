@@ -77,11 +77,7 @@ extension Command {
             //       parent directory of the first test module we can find.
             let firstTestModule = product.modules.flatMap{$0 as? SwiftModule}.filter{ $0.isTest }.first!
             let testDirectory = firstTestModule.sources.root.parentDirectory
-          #if CYGWIN
-            let mainFileName = "CygwinMain.swift"
-          #else
             let mainFileName = "LinuxMain.swift"
-          #endif
             let main = testDirectory.appending(component: mainFileName)
             args.append(main.asString)
             for module in product.modules {
