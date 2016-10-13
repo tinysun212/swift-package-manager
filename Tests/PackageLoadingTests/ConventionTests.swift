@@ -579,14 +579,61 @@ class ConventionTests: XCTestCase {
             result.checkDiagnostic("these referenced modules could not be found: Foo fix: reference only valid modules")
         }
 
+        // Reference self in dependencies.
+        package = PackageDescription.Package(name: "pkg", targets: [Target(name: "pkg", dependencies: ["pkg"])])
+        PackageBuilderTester(package, in: fs) { result in
+            result.checkDiagnostic("found cyclic dependency declaration: pkg -> pkg")
+        }
+
+        fs = InMemoryFileSystem(emptyFiles:
+            "/Sources/pkg1/Foo.swift",
+            "/Sources/pkg2/Foo.swift",
+            "/Sources/pkg3/Foo.swift"
+        )
+        // Cyclic dependency.
+        package = PackageDescription.Package(name: "pkg", targets: [
+            Target(name: "pkg1", dependencies: ["pkg2"]),
+            Target(name: "pkg2", dependencies: ["pkg3"]),
+            Target(name: "pkg3", dependencies: ["pkg1"]),
+        ])
+        PackageBuilderTester(package, in: fs) { result in
+            result.checkDiagnostic("found cyclic dependency declaration: pkg1 -> pkg2 -> pkg3 -> pkg1")
+        }
+
+        package = PackageDescription.Package(name: "pkg", targets: [
+            Target(name: "pkg1", dependencies: ["pkg2"]),
+            Target(name: "pkg2", dependencies: ["pkg3"]),
+            Target(name: "pkg3", dependencies: ["pkg2"]),
+        ])
+        PackageBuilderTester(package, in: fs) { result in
+            result.checkDiagnostic("found cyclic dependency declaration: pkg1 -> pkg2 -> pkg3 -> pkg2")
+        }
+
         // Executable as dependency.
-        // FIXME: maybe should support this and condiser it as build order dependency.
         fs = InMemoryFileSystem(emptyFiles:
             "/Sources/exec/main.swift",
             "/Sources/lib/lib.swift")
         package = PackageDescription.Package(name: "pkg", targets: [Target(name: "lib", dependencies: ["exec"])])
         PackageBuilderTester(package, in: fs) { result in
-            result.checkDiagnostic("the target lib cannot have the executable exec as a dependency fix: move the shared logic inside a library, which can be referenced from both the target and the executable")
+            result.checkModule("exec") { moduleResult in
+                moduleResult.check(c99name: "exec", type: .executable, isTest: false)
+                moduleResult.checkSources(root: "/Sources/exec", paths: "main.swift")
+            }
+
+            result.checkModule("lib") { moduleResult in
+                moduleResult.check(c99name: "lib", type: .library, isTest: false)
+                moduleResult.checkSources(root: "/Sources/lib", paths: "lib.swift")
+            }
+        }
+
+        // Reference a target which doesn't have sources.
+        fs = InMemoryFileSystem(emptyFiles:
+            "/Sources/pkg1/Foo.swift",
+            "/Sources/pkg2/readme.txt")
+        package = PackageDescription.Package(name: "pkg", targets: [Target(name: "pkg1", dependencies: ["pkg2"])])
+        PackageBuilderTester(package, in: fs) { result in
+            result.checkDiagnostic("warning: module 'pkg2' does not contain any sources.")
+            result.checkDiagnostic("these referenced modules could not be found: pkg2 fix: reference only valid modules")
         }
     }
 
@@ -811,11 +858,16 @@ class ConventionTests: XCTestCase {
     }
 
     func testNoSourcesInModule() throws {
-        let fs = InMemoryFileSystem()
+        var fs = InMemoryFileSystem()
         try fs.createDirectory(AbsolutePath("/Sources/Module"), recursive: true)
-
         PackageBuilderTester("MyPackage", in: fs) { result in
-            result.checkDiagnostic("the module at /Sources/Module does not contain any source files fix: either remove the module folder, or add a source file to the module")
+            result.checkDiagnostic("warning: module 'Module' does not contain any sources.")
+        }
+
+        fs = InMemoryFileSystem()
+        try fs.createDirectory(AbsolutePath("/Tests/ModuleTests"), recursive: true)
+        PackageBuilderTester("MyPackage", in: fs) { result in
+            result.checkDiagnostic("warning: test module 'ModuleTests' does not contain any sources.")
         }
     }
 
@@ -948,18 +1000,18 @@ final class PackageBuilderTester {
 
     @discardableResult
     init(_ package: PackageDescription.Package, path: AbsolutePath = .root, in fs: FileSystem, products: [PackageDescription.Product] = [], file: StaticString = #file, line: UInt = #line, _ body: (PackageBuilderTester) -> Void) {
+        let warningStream = BufferedOutputByteStream()
         do {
-            let warningStream = BufferedOutputByteStream()
             let loadedPackage = try loadPackage(package, path: path, in: fs, products: products, warningStream: warningStream)
             result = .package(loadedPackage)
             uncheckedModules = Set(loadedPackage.allModules)
-            // FIXME: Find a better way. Maybe Package can keep array of warnings.
-            uncheckedDiagnostics = Set(warningStream.bytes.asReadableString.characters.split(separator: "\n").map(String.init))
         } catch {
             let errorStr = String(describing: error)
             result = .error(errorStr)
             uncheckedDiagnostics.insert(errorStr)
         }
+        // FIXME: Use diagnostic manager whenever we have that.
+        uncheckedDiagnostics.formUnion(warningStream.bytes.asReadableString.characters.split(separator: "\n").map(String.init))
         body(self)
         validateDiagnostics(file: file, line: line)
         validateCheckedModules(file: file, line: line)

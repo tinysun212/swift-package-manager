@@ -13,16 +13,19 @@ import XCTest
 import TestSupport
 import Basic
 import Commands
+import SourceControl
+import func POSIX.popen
+import class Utility.Git
 
 final class PackageToolTests: XCTestCase {
     private func execute(_ args: [String], chdir: AbsolutePath? = nil) throws -> String {
         return try SwiftPMProduct.SwiftPackage.execute(args, chdir: chdir, printIfError: true)
     }
-    
+
     func testUsage() throws {
         XCTAssert(try execute(["--help"]).contains("USAGE: swift package"))
     }
-    
+
     func testVersion() throws {
         XCTAssert(try execute(["--version"]).contains("Swift Package Manager"))
     }
@@ -30,27 +33,31 @@ final class PackageToolTests: XCTestCase {
     func testFetch() throws {
         fixture(name: "DependencyResolution/External/Simple") { prefix in
             let packageRoot = prefix.appending(component: "Bar")
-            let packagesPath = packageRoot.appending(component: "Packages")
 
             // Check that `fetch` works.
             _ = try execute(["fetch"], chdir: packageRoot)
-            XCTAssertEqual(try localFileSystem.getDirectoryContents(packagesPath), ["Foo-1.2.3"])
+            let path = try SwiftPMProduct.packagePath(for: "Foo", packageRoot: packageRoot)
+            XCTAssertEqual(GitRepository(path: path).tags, ["1.2.3"])
         }
     }
 
     func testUpdate() throws {
         fixture(name: "DependencyResolution/External/Simple") { prefix in
             let packageRoot = prefix.appending(component: "Bar")
-            let packagesPath = packageRoot.appending(component: "Packages")
 
             // Perform an initial fetch.
             _ = try execute(["fetch"], chdir: packageRoot)
-            XCTAssertEqual(try localFileSystem.getDirectoryContents(packagesPath), ["Foo-1.2.3"])
+            var path = try SwiftPMProduct.packagePath(for: "Foo", packageRoot: packageRoot)
+            XCTAssertEqual(GitRepository(path: path).tags, ["1.2.3"])
 
             // Retag the dependency, and update.
-            try tagGitRepo(prefix.appending(component: "Foo"), tag: "1.2.4")
+            let repo = GitRepository(path: prefix.appending(component: "Foo"))
+            try repo.tag(name: "1.2.4")
             _ = try execute(["update"], chdir: packageRoot)
-            XCTAssertEqual(try localFileSystem.getDirectoryContents(packagesPath), ["Foo-1.2.4"])
+
+            // We shouldn't assume package path will be same after an update so ask again for it.
+            path = try SwiftPMProduct.packagePath(for: "Foo", packageRoot: packageRoot)
+            XCTAssertEqual(GitRepository(path: path).tags, ["1.2.3", "1.2.4"])
         }
     }
 
@@ -121,6 +128,100 @@ final class PackageToolTests: XCTestCase {
         }
     }
 
+    func testPackageEditAndUnedit() {
+        fixture(name: "Miscellaneous/PackageEdit") { prefix in
+            let fooPath = prefix.appending(component: "foo")
+            func build() throws -> String {
+                return try SwiftPMProduct.SwiftBuild.execute(["--enable-new-resolver"], chdir: fooPath, printIfError: true)
+            }
+            // Build the package.
+            _ = try build()
+
+            let exec = [fooPath.appending(components: ".build", "debug", "foo").asString]
+            // Sanity check.
+            XCTAssertEqual(try popen(exec), "5\n")
+
+            // Put bar and baz in edit mode.
+            _ = try SwiftPMProduct.SwiftPackage.execute(["edit", "--name", "bar", "--branch", "bugfix", "--enable-new-resolver"], chdir: fooPath, printIfError: true)
+            _ = try SwiftPMProduct.SwiftPackage.execute(["edit", "--name", "baz", "--branch", "bugfix", "--enable-new-resolver"], chdir: fooPath, printIfError: true)
+
+            // We should see it now in packages directory.
+            let editsPath = fooPath.appending(components: "Packages", "bar")
+            XCTAssert(isDirectory(editsPath))
+
+            let bazEditsPath = fooPath.appending(components: "Packages", "baz")
+            XCTAssert(isDirectory(bazEditsPath))
+            // Removing baz externally should just emit an warning and not a build failure.
+            try removeFileTree(bazEditsPath)
+
+            // Do a modification in bar and build.
+            try localFileSystem.writeFileContents(editsPath.appending(components: "Sources", "bar.swift"), bytes: "public let theValue = 8\n")
+            let buildOutput = try build()
+
+            XCTAssert(buildOutput.contains("baz was being edited but has been removed, falling back to original checkout."))
+            // We should be able to see that modification now.
+            XCTAssertEqual(try popen(exec), "8\n")
+            // The branch of edited package should be the one we provided when putting it in edit mode.
+            let editsRepo = GitRepository(path: editsPath)
+            XCTAssertEqual(try editsRepo.currentBranch(), "bugfix")
+
+            // It shouldn't be possible to unedit right now because of uncommited changes.
+            do {
+                _ = try SwiftPMProduct.SwiftPackage.execute(["unedit", "--name", "bar", "--enable-new-resolver"], chdir: fooPath)
+                XCTFail("Unexpected unedit success")
+            } catch {}
+
+            try editsRepo.stageEverything()
+            try editsRepo.commit()
+
+            // It shouldn't be possible to unedit right now because of unpushed changes.
+            do {
+                _ = try SwiftPMProduct.SwiftPackage.execute(["unedit", "--name", "bar", "--enable-new-resolver"], chdir: fooPath)
+                XCTFail("Unexpected unedit success")
+            } catch {}
+
+            // Push the changes.
+            try editsRepo.push(remote: "origin", branch: "bugfix")
+
+            // We should be able to unedit now.
+            _ = try SwiftPMProduct.SwiftPackage.execute(["unedit", "--name", "bar", "--enable-new-resolver"], chdir: fooPath, printIfError: true)
+        }
+    }
+
+    func testPackageReset() throws {
+        fixture(name: "DependencyResolution/External/Simple") { prefix in
+            let packageRoot = prefix.appending(component: "Bar")
+
+            // Build it.
+            XCTAssertBuilds(packageRoot)
+            XCTAssertFileExists(packageRoot.appending(components: ".build", "debug", "Bar"))
+            XCTAssert(isDirectory(packageRoot.appending(component: ".build")))
+            // FIXME: Eliminate this.
+            if !SwiftPMProduct.enableNewResolver {
+                XCTAssert(isDirectory(packageRoot.appending(component: "Packages")))
+            }
+
+            // Clean, and check for removal of the build directory but not Packages.
+
+            _ = try SwiftPMProduct.SwiftBuild.execute(["--clean"], chdir: packageRoot, printIfError: true)
+            XCTAssert(!exists(packageRoot.appending(components: ".build", "debug", "Bar")))
+            // We don't delete the build folder in new resolver.
+            // FIXME: Eliminate this once we switch to new resolver.
+            if !SwiftPMProduct.enableNewResolver {
+                XCTAssert(!isDirectory(packageRoot.appending(component: ".build")))
+                XCTAssert(isDirectory(packageRoot.appending(component: "Packages")))
+            }
+
+            // Fully clean, and check for removal of both.
+            _ = try execute(["reset"], chdir: packageRoot)
+            XCTAssert(!isDirectory(packageRoot.appending(component: ".build")))
+            // FIXME: Eliminate this.
+            if !SwiftPMProduct.enableNewResolver {
+                XCTAssert(!isDirectory(packageRoot.appending(component: "Packages")))
+            }
+        }
+    }
+
     static var allTests = [
         ("testUsage", testUsage),
         ("testVersion", testVersion),
@@ -131,5 +232,7 @@ final class PackageToolTests: XCTestCase {
         ("testInitEmpty", testInitEmpty),
         ("testInitExecutable", testInitExecutable),
         ("testInitLibrary", testInitLibrary),
+        ("testPackageEditAndUnedit", testPackageEditAndUnedit),
+        ("testPackageReset", testPackageReset),
     ]
 }

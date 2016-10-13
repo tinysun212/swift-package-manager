@@ -13,7 +13,7 @@ import TestSupport
 import PackageDescription
 import PackageGraph
 import PackageModel
-import Xcodeproj
+@testable import Xcodeproj
 import Utility
 import XCTest
 
@@ -28,7 +28,7 @@ class GenerateXcodeprojTests: XCTestCase {
             let projectName = "DummyProjectName"
             let dummyPackage = Package(manifest: Manifest(path: dstdir, url: dstdir.asString, package: PackageDescription.Package(name: "Foo"), products: [], version: nil), path: dstdir, modules: [], testModules: [], products: [])
             let graph = PackageGraph(rootPackage: dummyPackage, modules: try dummy(), externalModules: [])
-            let outpath = try Xcodeproj.generate(dstdir: dstdir, projectName: projectName, graph: graph, options: XcodeprojOptions())
+            let outpath = try Xcodeproj.generate(outputDir: dstdir, projectName: projectName, graph: graph, options: XcodeprojOptions())
 
             XCTAssertDirectoryExists(outpath)
             XCTAssertEqual(outpath, dstdir.appending(component: projectName + ".xcodeproj"))
@@ -43,8 +43,28 @@ class GenerateXcodeprojTests: XCTestCase {
         }
 #endif
     }
-    
+
+    func testXcconfigOverrideValidatesPath() {
+        mktmpdir { dstdir in
+            let fileSystem = InMemoryFileSystem(emptyFiles: "/Bar/bar.swift")
+            let graph = try loadMockPackageGraph(["/Bar": Package(name: "Bar")], root: "/Bar", in: fileSystem)
+
+            var options = XcodeprojOptions()
+            options.xcconfigOverrides = AbsolutePath("/doesntexist")
+            do {
+                _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"),
+                                     graph: graph, extraDirs: [], options: options, fileSystem: fileSystem)
+                XCTFail("Project generation should have failed")
+            } catch ProjectGenerationError.xcconfigOverrideNotFound(let path) {
+                XCTAssertEqual(options.xcconfigOverrides, path)
+            } catch {
+                XCTFail("Project generation shouldn't have had another error")
+            }
+        }
+    }
+
     static var allTests = [
-        ("testXcodebuildCanParseIt", testXcodebuildCanParseIt)
+        ("testXcodebuildCanParseIt", testXcodebuildCanParseIt),
+        ("testXcconfigOverrideValidatesPath", testXcconfigOverrideValidatesPath),
     ]
 }

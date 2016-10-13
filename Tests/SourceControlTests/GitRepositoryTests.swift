@@ -29,7 +29,7 @@ class GitRepositoryTests: XCTestCase {
         XCTAssertEqual(a, a2)
         XCTAssertEqual(Set([a]), Set([a2]))
     }
-        
+
     /// Test the basic provider functions.
     func testProvider() throws {
         mktmpdir { path in
@@ -64,14 +64,14 @@ class GitRepositoryTests: XCTestCase {
     func testGitRepositoryHash() throws {
         let validHash = "0123456789012345678901234567890123456789"
         XCTAssertNotEqual(GitRepository.Hash(validHash), nil)
-        
+
         let invalidHexHash = validHash + "1"
         XCTAssertEqual(GitRepository.Hash(invalidHexHash), nil)
-        
+
         let invalidNonHexHash = "012345678901234567890123456789012345678!"
         XCTAssertEqual(GitRepository.Hash(invalidNonHexHash), nil)
     }
-    
+
     /// Check raw repository facilities.
     ///
     /// In order to be stable, this test uses a static test git repository in
@@ -138,9 +138,10 @@ class GitRepositoryTests: XCTestCase {
             try localFileSystem.writeFileContents(testRepoPath.appending(component: "test-file-1.txt"), bytes: test1FileContents)
             try localFileSystem.createDirectory(testRepoPath.appending(component: "subdir"))
             try localFileSystem.writeFileContents(testRepoPath.appending(components: "subdir", "test-file-2.txt"), bytes: test2FileContents)
-            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "add", "test-file-1.txt", "subdir/test-file-2.txt"])
-            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "commit", "-m", "Add some files."])
-            try tagGitRepo(testRepoPath, tag: "test-tag")
+            let testRepo = GitRepository(path: testRepoPath)
+            try testRepo.stage(files: "test-file-1.txt", "subdir/test-file-2.txt")
+            try testRepo.commit()
+            try testRepo.tag(name: "test-tag")
 
             // Get the the repository via the provider. the provider.
             let testClonePath = path.appending(component: "clone")
@@ -180,7 +181,7 @@ class GitRepositoryTests: XCTestCase {
             XCTAssertThrows(FileSystemError.notDirectory) {
                 _ = try view.readFileContents(AbsolutePath("/test-file-1.txt/thing"))
             }
-            
+
             // Check read/write into a missing directory.
             XCTAssertThrows(FileSystemError.noEntry) {
                 _ = try view.getDirectoryContents(AbsolutePath("/does-not-exist"))
@@ -206,9 +207,10 @@ class GitRepositoryTests: XCTestCase {
 
             // Add a couple files and a directory.
             try localFileSystem.writeFileContents(testRepoPath.appending(component: "test.txt"), bytes: "Hi")
-            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "add", "test.txt"])
-            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "commit", "-m", "Add some files."])
-            try tagGitRepo(testRepoPath, tag: "test-tag")
+            let testRepo = GitRepository(path: testRepoPath)
+            try testRepo.stage(file: "test.txt")
+            try testRepo.commit()
+            try testRepo.tag(name: "test-tag")
             let currentRevision = Git.Repo(path: testRepoPath)!.sha
 
             // Fetch the repository using the provider.
@@ -219,25 +221,252 @@ class GitRepositoryTests: XCTestCase {
 
             // Clone off a checkout.
             let checkoutPath = path.appending(component: "checkout")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath)
+            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: false)
+            // The remote of this checkout should point to the clone.
+            XCTAssertEqual(try GitRepository(path: checkoutPath).remotes()[0].url, testClonePath.asString)
 
-            // Check the working copy.
-            let workingCopy = try provider.openCheckout(at: checkoutPath)
-            try workingCopy.checkout(tag: "test-tag")
-            XCTAssertEqual(try workingCopy.getCurrentRevision().identifier, currentRevision)
-            XCTAssert(localFileSystem.exists(checkoutPath.appending(component: "test.txt")))
-            try workingCopy.checkout(tag: "initial")
-            XCTAssertEqual(try workingCopy.getCurrentRevision().identifier, initialRevision)
-            XCTAssert(!localFileSystem.exists(checkoutPath.appending(component: "test.txt")))
+            let editsPath = path.appending(component: "edit")
+            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: editsPath, editable: true)
+            // The remote of this checkout should point to the original repo.
+            XCTAssertEqual(try GitRepository(path: editsPath).remotes()[0].url, testRepoPath.asString)
+
+            // Check the working copies.
+            for path in [checkoutPath, editsPath] {
+                let workingCopy = try provider.openCheckout(at: path)
+                try workingCopy.checkout(tag: "test-tag")
+                XCTAssertEqual(try workingCopy.getCurrentRevision().identifier, currentRevision)
+                XCTAssert(localFileSystem.exists(path.appending(component: "test.txt")))
+                try workingCopy.checkout(tag: "initial")
+                XCTAssertEqual(try workingCopy.getCurrentRevision().identifier, initialRevision)
+                XCTAssert(!localFileSystem.exists(path.appending(component: "test.txt")))
+            }
+        }
+    }
+
+    func testFetch() throws {
+        mktmpdir { path in
+            // Create a repo.
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath, tag: "1.2.3")
+            let repo = GitRepository(path: testRepoPath)
+            XCTAssertEqual(repo.tags, ["1.2.3"])
+
+            // Clone it somewhere.
+            let testClonePath = path.appending(component: "clone")
+            let provider = GitRepositoryProvider()
+            let repoSpec = RepositorySpecifier(url: testRepoPath.asString)
+            try provider.fetch(repository: repoSpec, to: testClonePath)
+            let clonedRepo = provider.open(repository: repoSpec, at: testClonePath)
+            XCTAssertEqual(clonedRepo.tags, ["1.2.3"])
+
+            // Clone off a checkout.
+            let checkoutPath = path.appending(component: "checkout")
+            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: false)
+            let checkoutRepo = try provider.openCheckout(at: checkoutPath)
+            XCTAssertEqual(checkoutRepo.tags, ["1.2.3"])
+
+            // Add a new file to original repo.
+            try localFileSystem.writeFileContents(testRepoPath.appending(component: "test.txt"), bytes: "Hi")
+            let testRepo = GitRepository(path: testRepoPath)
+            try testRepo.stage(file: "test.txt")
+            try testRepo.commit()
+            try testRepo.tag(name: "2.0.0")
+
+            // Update the cloned repo.
+            try clonedRepo.fetch()
+            XCTAssertEqual(clonedRepo.tags.sorted(), ["1.2.3", "2.0.0"])
+
+            // Update the checkout.
+            try checkoutRepo.fetch()
+            XCTAssertEqual(checkoutRepo.tags.sorted(), ["1.2.3", "2.0.0"])
+        }
+    }
+
+    func testHasUnpushedCommits() throws {
+        mktmpdir { path in
+            // Create a repo.
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath)
+
+            // Create a bare clone it somewhere because we want to later push into the repo.
+            let testBareRepoPath = path.appending(component: "test-repo-bare")
+            try systemQuietly([Git.tool, "clone", "--bare", testRepoPath.asString, testBareRepoPath.asString])
+
+            // Clone it somewhere.
+            let testClonePath = path.appending(component: "clone")
+            let provider = GitRepositoryProvider()
+            let repoSpec = RepositorySpecifier(url: testBareRepoPath.asString)
+            try provider.fetch(repository: repoSpec, to: testClonePath)
+
+            // Clone off a checkout.
+            let checkoutPath = path.appending(component: "checkout")
+            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: true)
+            let checkoutRepo = try provider.openCheckout(at: checkoutPath)
+
+            XCTAssertFalse(try checkoutRepo.hasUnpushedCommits())
+            // Add a new file to checkout.
+            try localFileSystem.writeFileContents(checkoutPath.appending(component: "test.txt"), bytes: "Hi")
+            let checkoutTestRepo = GitRepository(path: checkoutPath)
+            try checkoutTestRepo.stage(file: "test.txt")
+            try checkoutTestRepo.commit()
+
+            // We should have commits which are not pushed.
+            XCTAssert(try checkoutRepo.hasUnpushedCommits())
+            // Push the changes and check again.
+            try checkoutTestRepo.push(remote: "origin", branch: "master")
+            XCTAssertFalse(try checkoutRepo.hasUnpushedCommits())
+        }
+    }
+
+    func testRemotes() {
+        mktmpdir { path in
+            // Create a repo.
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath)
+            let repo = GitRepository(path: testRepoPath)
+
+            // There should be no remotes currently.
+            XCTAssert(try repo.remotes().isEmpty)
+
+            // Add a remote via git cli.
+            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "remote", "add", "origin", "../foo"])
+            // Test if it was added.
+            XCTAssertEqual(Dictionary(items: try repo.remotes().map { ($0, $1) }), ["origin": "../foo"])
+
+            // Remove the remote via cli.
+            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "remote", "remove", "origin"])
+            // Test if it was removed.
+            XCTAssert(try repo.remotes().isEmpty)
+
+            // Add a remote.
+            try repo.add(remote: "origin", url: "../foo")
+            // Check it was added.
+            let remote = Dictionary(items: try repo.remotes().map { ($0, $1) })
+            XCTAssertEqual(remote, ["origin": "../foo"])
+
+            // Add another remote.
+            try repo.add(remote: "origin2", url: "../bar")
+            // Check that there are two remotes now.
+            let remotes = Dictionary(items: try repo.remotes().map { ($0, $1)})
+            XCTAssertEqual(remotes, ["origin": "../foo", "origin2": "../bar"])
+
+            // Remove the remotes.
+            try repo.remove(remote: "origin")
+            try repo.remove(remote: "origin2")
+
+            // All remotes should be removed now.
+            XCTAssert(try repo.remotes().isEmpty)
+        }
+    }
+
+    func testUncommitedChanges() throws {
+        mktmpdir { path in
+            // Create a repo.
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath)
+
+            // Create a file (which we will modify later).
+            try localFileSystem.writeFileContents(testRepoPath.appending(component: "test.txt"), bytes: "Hi")
+            let repo = GitRepository(path: testRepoPath)
+            try repo.stage(file: "test.txt")
+            try repo.commit()
+
+            XCTAssertFalse(repo.hasUncommitedChanges())
+
+            // Modify the file in the repo.
+            try localFileSystem.writeFileContents(repo.path.appending(component: "test.txt"), bytes: "Hello")
+            XCTAssert(repo.hasUncommitedChanges())
+        }
+    }
+
+    func testBranchOperations() throws {
+        mktmpdir { path in
+            // Create a repo.
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath)
+
+            let repo = GitRepository(path: testRepoPath)
+            var currentRevision = try repo.getCurrentRevision()
+            // This is the default branch of a new repo.
+            XCTAssert(repo.exists(revision: Revision(identifier: "master")))
+            // Check a non existent revision.
+            XCTAssertFalse(repo.exists(revision: Revision(identifier: "nonExistent")))
+            // Checkout a new branch using command line.
+            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "checkout", "-b", "TestBranch1"])
+            XCTAssert(repo.exists(revision: Revision(identifier: "TestBranch1")))
+            XCTAssertEqual(try repo.getCurrentRevision(), currentRevision)
+
+            // Make sure we're on the new branch right now.
+            XCTAssertEqual(try repo.currentBranch(), "TestBranch1")
+
+            // Checkout new branch using our API.
+            currentRevision = try repo.getCurrentRevision()
+            try repo.checkout(newBranch: "TestBranch2")
+            XCTAssert(repo.exists(revision: Revision(identifier: "TestBranch2")))
+            XCTAssertEqual(try repo.getCurrentRevision(), currentRevision)
+            XCTAssertEqual(try repo.currentBranch(), "TestBranch2")
+        }
+    }
+
+    func testCheckoutRevision() throws {
+        mktmpdir { path in
+            // Create a repo.
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath)
+            let repo = GitRepository(path: testRepoPath)
+
+            func createAndStageTestFile() throws {
+                try localFileSystem.writeFileContents(testRepoPath.appending(component: "test.txt"), bytes: "Hi")
+                try repo.stage(file: "test.txt")
+            }
+
+            try repo.checkout(revision: Revision(identifier: "master"))
+            // Current branch must be master.
+            XCTAssertEqual(try repo.currentBranch(), "master")
+            // Create a new branch.
+            try repo.checkout(newBranch: "TestBranch")
+            XCTAssertEqual(try repo.currentBranch(), "TestBranch")
+            // Create some random file.
+            try createAndStageTestFile()
+            XCTAssert(repo.hasUncommitedChanges())
+            // Checkout current revision again, the test file should go away.
+            let currentRevision = try repo.getCurrentRevision()
+            try repo.checkout(revision: currentRevision)
+            XCTAssertFalse(repo.hasUncommitedChanges())
+            // We should be on detached head.
+            XCTAssertEqual(try repo.currentBranch(), "HEAD")
+
+            // Try again and checkout to a previous branch.
+            try createAndStageTestFile()
+            XCTAssert(repo.hasUncommitedChanges())
+            try repo.checkout(revision: Revision(identifier: "TestBranch"))
+            XCTAssertFalse(repo.hasUncommitedChanges())
+            XCTAssertEqual(try repo.currentBranch(), "TestBranch")
+
+            do {
+                try repo.checkout(revision: Revision(identifier: "nonExistent"))
+                XCTFail("Unexpected checkout success on non existent branch")
+            } catch {}
         }
     }
 
     static var allTests = [
+        ("testBranchOperations", testBranchOperations),
+        ("testFetch", testFetch),
         ("testRepositorySpecifier", testRepositorySpecifier),
         ("testProvider", testProvider),
         ("testGitRepositoryHash", testGitRepositoryHash),
         ("testRawRepository", testRawRepository),
+        ("testRemotes", testRemotes),
         ("testGitFileView", testGitFileView),
         ("testCheckouts", testCheckouts),
+        ("testHasUnpushedCommits", testHasUnpushedCommits),
+        ("testUncommitedChanges", testUncommitedChanges),
     ]
 }

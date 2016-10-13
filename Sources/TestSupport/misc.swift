@@ -11,7 +11,11 @@
 import func XCTest.XCTFail
 
 import Basic
+import PackageDescription
+import PackageGraph
+import PackageModel
 import POSIX
+import SourceControl
 import Utility
 
 #if os(macOS)
@@ -25,26 +29,26 @@ public func fixture(name: String, tags: [String] = [], file: StaticString = #fil
         // Make a suitable test directory name from the fixture subpath.
         let fixtureSubpath = RelativePath(name)
         let copyName = fixtureSubpath.components.joined(separator: "_")
-        
+
         // Create a temporary directory for the duration of the block.
         let tmpDir = try TemporaryDirectory(prefix: copyName, removeTreeOnDeinit: true)
-            
+
         // Construct the expected path of the fixture.
         // FIXME: This seems quite hacky; we should provide some control over where fixtures are found.
         let fixtureDir = AbsolutePath(#file).appending(RelativePath("../../../Fixtures")).appending(fixtureSubpath)
-        
+
         // Check that the fixture is really there.
         guard isDirectory(fixtureDir) else {
             XCTFail("No such fixture: \(fixtureDir.asString)", file: file, line: line)
             return
         }
-        
+
         // The fixture contains either a checkout or just a Git directory.
         if isFile(fixtureDir.appending(component: "Package.swift")) {
             // It's a single package, so copy the whole directory as-is.
             let dstDir = tmpDir.path.appending(component: copyName)
             try systemQuietly("cp", "-R", "-H", fixtureDir.asString, dstDir.asString)
-            
+
             // Invoke the block, passing it the path of the copied fixture.
             try body(dstDir)
         } else {
@@ -59,21 +63,16 @@ public func fixture(name: String, tags: [String] = [], file: StaticString = #fil
                     return versions.removeFirst()
                 }
             }
-            
+
             // Copy each of the package directories and construct a git repo in it.
             for fileName in try! localFileSystem.getDirectoryContents(fixtureDir).sorted() {
                 let srcDir = fixtureDir.appending(component: fileName)
                 guard isDirectory(srcDir) else { continue }
                 let dstDir = tmpDir.path.appending(component: fileName)
                 try systemQuietly("cp", "-R", "-H", srcDir.asString, dstDir.asString)
-                try systemQuietly([Git.tool, "-C", dstDir.asString, "init"])
-                try systemQuietly([Git.tool, "-C", dstDir.asString, "config", "user.email", "example@example.com"])
-                try systemQuietly([Git.tool, "-C", dstDir.asString, "config", "user.name", "Example Example"])
-                try systemQuietly([Git.tool, "-C", dstDir.asString, "add", "."])
-                try systemQuietly([Git.tool, "-C", dstDir.asString, "commit", "-m", "msg"])
-                try systemQuietly([Git.tool, "-C", dstDir.asString, "tag", popVersion()])
+                initGitRepo(dstDir, tag: popVersion(), addFile: false)
             }
-            
+
             // Invoke the block, passing it the path of the copied fixture.
             try body(tmpDir.path)
         }
@@ -82,43 +81,33 @@ public func fixture(name: String, tags: [String] = [], file: StaticString = #fil
     }
 }
 
-/// Test-helper function that creates a new Git repository in a directory.  The new repository will contain exactly one empty file, and if a tag name is provided, a tag with that name will be created.
-public func initGitRepo(_ dir: AbsolutePath, tag: String? = nil, file: StaticString = #file, line: UInt = #line) {
-    initGitRepo(dir, tags: tag.flatMap{ [$0] } ?? [], file: file, line: line)
+/// Test-helper function that creates a new Git repository in a directory.  The new repository will contain
+/// exactly one empty file unless `addFile` is `false`, and if a tag name is provided, a tag with that name will be created.
+public func initGitRepo(_ dir: AbsolutePath, tag: String? = nil, addFile: Bool = true, file: StaticString = #file, line: UInt = #line) {
+    initGitRepo(dir, tags: tag.flatMap{ [$0] } ?? [], addFile: addFile, file: file, line: line)
 }
 
-public func initGitRepo(_ dir: AbsolutePath, tags: [String], file: StaticString = #file, line: UInt = #line) {
+public func initGitRepo(_ dir: AbsolutePath, tags: [String], addFile: Bool = true, file: StaticString = #file, line: UInt = #line) {
     do {
-        let file = dir.appending(component: "file.swift")
-        try systemQuietly(["touch", file.asString])
+        if addFile {
+            let file = dir.appending(component: "file.swift")
+            try systemQuietly(["touch", file.asString])
+        }
+
         try systemQuietly([Git.tool, "-C", dir.asString, "init"])
         try systemQuietly([Git.tool, "-C", dir.asString, "config", "user.email", "example@example.com"])
         try systemQuietly([Git.tool, "-C", dir.asString, "config", "user.name", "Example Example"])
-        try systemQuietly([Git.tool, "-C", dir.asString, "add", "."])
-        try systemQuietly([Git.tool, "-C", dir.asString, "commit", "-m", "msg"])
+        try systemQuietly([Git.tool, "-C", dir.asString, "config", "commit.gpgsign", "false"])
+        let repo = GitRepository(path: dir)
+        try repo.stageEverything()
+        try repo.commit(message: "msg")
         for tag in tags {
-            try tagGitRepo(dir, tag: tag)
+            try repo.tag(name: tag)
         }
     }
     catch {
         XCTFail("\(error)", file: file, line: line)
     }
-}
-
-public func tagGitRepo(_ dir: AbsolutePath, tag: String) throws {
-    try systemQuietly([Git.tool, "-C", dir.asString, "tag", tag])
-}
-
-public func removeTagGitRepo(_ dir: AbsolutePath, tag: String) throws {
-    try systemQuietly([Git.tool, "-C", dir.asString, "tag", "-d", tag])
-}
-
-public func addGitRepo(_ dir: AbsolutePath, file path: RelativePath) throws {
-    try systemQuietly([Git.tool, "-C", dir.asString, "add", path.asString])
-}
-
-public func commitGitRepo(_ dir: AbsolutePath, message: String = "Test commit") throws {
-    try systemQuietly([Git.tool, "-C", dir.asString, "commit", "-m", message])
 }
 
 public enum Configuration {
@@ -183,3 +172,23 @@ public extension FileSystem {
     }
 }
 
+/// Loads a mock package graph based on package packageMap dictionary provided where key is path to a package.
+public func loadMockPackageGraph(_ packageMap: [String: PackageDescription.Package], root: String, in fs: FileSystem) throws -> PackageGraph {
+    var externalManifests = [Manifest]()
+    var rootManifest: Manifest!
+    for (url, package) in packageMap {
+        let manifest = Manifest(
+            path: AbsolutePath(url).appending(component: Manifest.filename),
+            url: url,
+            package: package,
+            products: [],
+            version: "1.0.0"
+        )
+        if url == root {
+            rootManifest = manifest
+        } else {
+            externalManifests.append(manifest)
+        }
+    }
+    return try PackageGraphLoader().load(rootManifest: rootManifest, externalManifests: externalManifests, fileSystem: fs)
+}

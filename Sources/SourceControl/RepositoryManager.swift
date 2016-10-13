@@ -11,8 +11,14 @@
 import Basic
 import Utility
 
-/// Manages a collection of repository checkouts.
-public class CheckoutManager {
+/// Delegate to notify clients about actions being performed by RepositoryManager.
+public protocol RepositoryManagerDelegate: class {
+    /// Called when a repository is about to be fetched.
+    func fetching(handle: RepositoryManager.RepositoryHandle, to path: AbsolutePath)
+}
+
+/// Manages a collection of bare repositories.
+public class RepositoryManager {
     /// Handle to a managed repository.
     public class RepositoryHandle {
         enum Status: String {
@@ -30,10 +36,10 @@ public class CheckoutManager {
         }
         
         /// The manager this repository is owned by.
-        private unowned let manager: CheckoutManager
+        private unowned let manager: RepositoryManager
 
         /// The repository specifier.
-        fileprivate let repository: RepositorySpecifier
+        public let repository: RepositorySpecifier
 
         /// The subpath of the repository within the manager.
         ///
@@ -45,14 +51,14 @@ public class CheckoutManager {
         fileprivate var status: Status = .uninitialized
 
         /// Create a handle.
-        fileprivate init(manager: CheckoutManager, repository: RepositorySpecifier, subpath: RelativePath) {
+        fileprivate init(manager: RepositoryManager, repository: RepositorySpecifier, subpath: RelativePath) {
             self.manager = manager
             self.repository = repository
             self.subpath = subpath
         }
 
         /// Create a handle from JSON data.
-        fileprivate init?(manager: CheckoutManager, json data: JSON) {
+        fileprivate init?(manager: RepositoryManager, json data: JSON) {
             guard case let .dictionary(contents) = data,
                   case let .string(subpath)? = contents["subpath"],
                   case let .string(repositoryURL)? = contents["repositoryURL"],
@@ -102,9 +108,10 @@ public class CheckoutManager {
         /// - Parameters:
         ///   - path: The path at which to create the working copy; it is
         ///     expected to be non-existent when called.
-        public func cloneCheckout(to path: AbsolutePath) throws {
+        ///   - editable: The clone is expected to be edited by user.
+        public func cloneCheckout(to path: AbsolutePath, editable: Bool) throws {
             precondition(status == .available, "cloneCheckout() called in invalid state")
-            try self.manager.cloneCheckout(self, to: path)
+            try self.manager.cloneCheckout(self, to: path, editable: editable)
         }
 
         // MARK: Persistence
@@ -124,6 +131,9 @@ public class CheckoutManager {
     /// The repository provider.
     public let provider: RepositoryProvider
 
+    /// The delegate interface.
+    private let delegate: RepositoryManagerDelegate
+
     /// The map of registered repositories.
     //
     // FIXME: We should use a more sophisticated map here, which tracks the full
@@ -136,9 +146,10 @@ public class CheckoutManager {
     /// - path: The path under which to store repositories. This should be a
     ///         directory in which the content can be completely managed by this
     ///         instance.
-    public init(path: AbsolutePath, provider: RepositoryProvider) {
+    public init(path: AbsolutePath, provider: RepositoryProvider, delegate: RepositoryManagerDelegate) {
         self.path = path
         self.provider = provider
+        self.delegate = delegate
 
         // Load the state from disk, if possible.
         do {
@@ -159,6 +170,15 @@ public class CheckoutManager {
     public func lookup(repository: RepositorySpecifier) -> RepositoryHandle {
         // Check to see if the repository has been provided.
         if let handle = repositories[repository.url] {
+            // Fetch and update the repository when it is being looked up.
+            // We need some mechanism to maybe not do this for pinned repos.
+            do {
+                let repo = try handle.open()
+                try repo.fetch()
+            } catch {
+                // FIXME: Better error handling.
+                print("Error while fetching the repo: \(handle)")
+            }
             return handle
         }
         
@@ -176,6 +196,7 @@ public class CheckoutManager {
         // FIXME: This should run on a background thread.
         do {
             handle.status = .pending
+            delegate.fetching(handle: handle, to: repositoryPath)
             try provider.fetch(repository: repository, to: repositoryPath)
             handle.status = .available
         } catch {
@@ -200,8 +221,20 @@ public class CheckoutManager {
     }
 
     /// Clone a repository from a handle.
-    private func cloneCheckout(_ handle: RepositoryHandle, to destinationPath: AbsolutePath) throws {
-        try provider.cloneCheckout(repository: handle.repository, at: path.appending(handle.subpath), to: destinationPath)
+    private func cloneCheckout(_ handle: RepositoryHandle, to destinationPath: AbsolutePath, editable: Bool) throws {
+        try provider.cloneCheckout(repository: handle.repository, at: path.appending(handle.subpath), to: destinationPath, editable: editable)
+    }
+
+    /// Removes the repository.
+    public func remove(repository: RepositorySpecifier) throws {
+        // If repository isn't present, we're done.
+        guard let handle = repositories[repository.url] else {
+            return
+        }
+        repositories[repository.url] = nil
+        let repositoryPath = path.appending(handle.subpath)
+        try removeFileTree(repositoryPath)
+        try saveState()
     }
 
     // MARK: Persistence
@@ -245,7 +278,7 @@ public class CheckoutManager {
               case let .int(version)? = contents["version"] else {
             throw PersistenceError.unexpectedData
         }
-        guard version == CheckoutManager.schemaVersion else {
+        guard version == RepositoryManager.schemaVersion else {
             throw PersistenceError.invalidVersion
         }
         guard case let .array(repositoriesData)? = contents["repositories"] else {
@@ -276,7 +309,7 @@ public class CheckoutManager {
     /// Write the manager state to disk.
     private func saveState() throws {
         var data = [String: JSON]()
-        data["version"] = .int(CheckoutManager.schemaVersion)
+        data["version"] = .int(RepositoryManager.schemaVersion)
         // FIXME: Should record information on the provider, in case it changes.
         data["repositories"] = .array(repositories.map{ (key, handle) in
                 .dictionary([
@@ -289,7 +322,7 @@ public class CheckoutManager {
     }
 }
 
-extension CheckoutManager.RepositoryHandle: CustomStringConvertible {
+extension RepositoryManager.RepositoryHandle: CustomStringConvertible {
     public var description: String {
         return "<\(type(of: self)) subpath:\(subpath.asString)>"
     }

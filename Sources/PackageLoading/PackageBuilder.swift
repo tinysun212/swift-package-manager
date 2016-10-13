@@ -29,11 +29,11 @@ public enum ModuleError: Swift.Error {
             case unexpectedSourceFiles([String])
         }
     
-    /// A module was marked as being dependent on an executable.
-    case executableAsDependency(module: String, dependency: String)
-
     /// The manifest has invalid configuration wrt type of the module.
     case invalidManifestConfig(String, String)
+
+    /// The target dependency declaration has cycle in it.
+    case cycleDetected((path: [Module], cycle: [Module]))
 }
 
 extension ModuleError: FixableError {
@@ -43,10 +43,12 @@ extension ModuleError: FixableError {
             return "these referenced modules could not be found: " + modules.joined(separator: ", ")
         case .invalidLayout(let type):
             return "the package has an unsupported layout, \(type.error)"
-        case .executableAsDependency(let module, let dependency):
-            return "the target \(module) cannot have the executable \(dependency) as a dependency"
         case .invalidManifestConfig(let package, let message):
             return "invalid configuration in '\(package)': \(message)"
+        case .cycleDetected(let cycle):
+            return "found cyclic dependency declaration: " +
+                (cycle.path + cycle.cycle).map{$0.name}.joined(separator: " -> ") +
+                " -> " + cycle.cycle[0].name
         }
     }
 
@@ -56,9 +58,9 @@ extension ModuleError: FixableError {
             return "reference only valid modules"
         case .invalidLayout(let type):
             return type.fix
-        case .executableAsDependency(_):
-            return "move the shared logic inside a library, which can be referenced from both the target and the executable"
         case .invalidManifestConfig(_):
+            return nil
+        case .cycleDetected(_):
             return nil
         }
     }
@@ -100,9 +102,6 @@ extension Module {
             case hasTestSuffix
         }
         
-        /// The module contains no source code at all.
-        case noSources(String)
-        
         /// The module contains an invalid mix of languages (e.g. both Swift and C).
         case mixedSources(String)
     }
@@ -113,8 +112,6 @@ extension Module.Error: FixableError {
         switch self {
           case .invalidName(let path, let name, let problem):
             return "the module at \(path) has an invalid name ('\(name)'): \(problem.error)"
-          case .noSources(let path):
-            return "the module at \(path) does not contain any source files"
           case .mixedSources(let path):
             return "the module at \(path) contains mixed language source files"
         }
@@ -124,8 +121,6 @@ extension Module.Error: FixableError {
         switch self {
         case .invalidName(let path, _, let problem):
             return "rename the module at ‘\(path)’\(problem.fix ?? "")"
-        case .noSources(_):
-            return "either remove the module folder, or add a source file to the module"
         case .mixedSources(_):
             return "use only a single language within a module"
         }
@@ -385,17 +380,20 @@ public struct PackageBuilder {
         let modules: [Module]
         if potentialModulePaths.isEmpty {
             // There are no directories that look like modules, so try to create a module for the source directory itself (with the name coming from the name in the manifest).
-            do {
-                modules = [try createModule(srcDir, name: manifest.name, isTest: false)]
+            guard let module = try createModule(srcDir, name: manifest.name, isTest: false) else {
+                // FIXME: We should return nil from here.
+                return []
             }
-            catch Module.Error.noSources {
-                // Completely empty packages are allowed as a special case.
-                modules = []
-            }
+            modules = [module]
         } else {
             // We have at least one directory that looks like a module, so we try to create a module for each one.
-            modules = try potentialModulePaths.map { path in
-                try createModule(path, name: path.basename, isTest: false)
+            modules = try potentialModulePaths.flatMap { path in
+                guard let module = try createModule(path, name: path.basename, isTest: false) else {
+                    warningStream <<< "warning: module '\(path.basename)' does not contain any sources.\n"
+                    warningStream.flush()
+                    return nil
+                }
+                return module
             }
         }
 
@@ -430,9 +428,6 @@ public struct PackageBuilder {
                     guard let dependency = modulesByName[name] else {
                         throw ModuleError.modulesNotFound([name])
                     }
-                    if dependency.type != .library {
-                        throw ModuleError.executableAsDependency(module: module.name, dependency: name)
-                    }
                     return dependency
                 }
             }
@@ -452,6 +447,11 @@ public struct PackageBuilder {
                 module.dependencies = [baseModule]
             }
         }
+
+        // Look for any cycle in the dependencies.
+        if let cycle = findCycle(modules.sorted { $0.name < $1.name }, successors: { $0.dependencies}) {
+            throw ModuleError.cycleDetected(cycle)
+        }
     }
     
     /// Private function that checks whether a module name is valid.  This method doesn't return anything, but rather, if there's a problem, it throws an error describing what the problem is.
@@ -469,7 +469,7 @@ public struct PackageBuilder {
     }
     
     /// Private function that constructs a single Module object for the module at `path`, having the name `name`.  If `isTest` is true, the module is constructed as a test module; if false, it is a regular module.
-    private func createModule(_ path: AbsolutePath, name: String, isTest: Bool) throws -> Module {
+    private func createModule(_ path: AbsolutePath, name: String, isTest: Bool) throws -> Module? {
         
         // Validate the module name.  This function will throw an error if it detects a problem.
         try validateModuleName(path, name, isTest: isTest)
@@ -482,11 +482,11 @@ public struct PackageBuilder {
         let cSources = sources.filter{ SupportedLanguageExtension.cFamilyExtensions.contains($0.extension!) }
         let swiftSources = sources.filter{ SupportedLanguageExtension.swiftExtensions.contains($0.extension!) }
         assert(sources.count == cSources.count + swiftSources.count)
-
+        
         // Create and return the right kind of module depending on what kind of sources we found.
         if cSources.isEmpty {
+            guard !swiftSources.isEmpty else { return nil }
             // No C sources, so we expect to have Swift sources, and we create a Swift module.
-            guard !swiftSources.isEmpty else { throw Module.Error.noSources(path.asString) }
             return try SwiftModule(name: name, isTest: isTest, sources: Sources(paths: swiftSources, root: path))
         } else {
             // No Swift sources, so we expect to have C sources, and we create a C module.
@@ -587,7 +587,12 @@ public struct PackageBuilder {
         
         // Create the test modules
         return try testsDirContents.filter(shouldConsiderDirectory).flatMap { dir in
-            return [try createModule(dir, name: dir.basename, isTest: true)]
+            guard let module = try createModule(dir, name: dir.basename, isTest: true) else {
+                warningStream <<< "warning: test module '\(dir.basename)' does not contain any sources.\n"
+                warningStream.flush()
+                return nil
+            }
+            return module
         }
     }
 }

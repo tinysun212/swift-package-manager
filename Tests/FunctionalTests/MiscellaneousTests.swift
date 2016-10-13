@@ -21,7 +21,7 @@ import func POSIX.popen
 class MiscellaneousTestCase: XCTestCase {
     func testPrintsSelectedDependencyVersion() {
 
-        // verifies the stdout contains information about 
+        // verifies the stdout contains information about
         // the selected version of the package
 
         fixture(name: "DependencyResolution/External/Simple", tags: ["1.3.5"]) { prefix in
@@ -91,21 +91,21 @@ class MiscellaneousTestCase: XCTestCase {
             XCTAssertNoSuchPath(buildDir.appending(component: "some"))
         }
     }
-    
+
     func testManifestExcludes4() {
-        
+
         // exclude directory is inside Tests folder (Won't build without exclude)
-        
+
         fixture(name: "Miscellaneous/ExcludeDiagnostic4") { prefix in
             XCTAssertBuilds(prefix)
             XCTAssertFileExists(prefix.appending(components: ".build", "debug", "FooPackage.swiftmodule"))
         }
     }
-    
+
     func testManifestExcludes5() {
-        
+
         // exclude directory is Tests folder (Won't build without exclude)
-        
+
         fixture(name: "Miscellaneous/ExcludeDiagnostic5") { prefix in
             XCTAssertBuilds(prefix)
             XCTAssertFileExists(prefix.appending(components: ".build", "debug", "FooPackage.swiftmodule"))
@@ -264,7 +264,8 @@ class MiscellaneousTestCase: XCTestCase {
         fixture(name: "DependencyResolution/External/Complex") { prefix in
             let execpath = [prefix.appending(components: "app", ".build", "debug", "Dealer").asString]
 
-            XCTAssertBuilds(prefix.appending(component: "app"))
+            let packageRoot = prefix.appending(component: "app")
+            XCTAssertBuilds(packageRoot)
             var output = try popen(execpath)
             XCTAssertEqual(output, "♣︎K\n♣︎Q\n♣︎J\n♣︎10\n♣︎9\n♣︎8\n♣︎7\n♣︎6\n♣︎5\n♣︎4\n")
 
@@ -272,7 +273,8 @@ class MiscellaneousTestCase: XCTestCase {
             // llbuild does not realize the file has changed
             sleep(1)
 
-            try localFileSystem.writeFileContents(prefix.appending(components: "app", "Packages", "FisherYates-1.2.3", "src", "Fisher-Yates_Shuffle.swift"), bytes: "public extension Collection{ func shuffle() -> [Iterator.Element] {return []} }\n\npublic extension MutableCollection where Index == Int { mutating func shuffleInPlace() { for (i, _) in enumerated() { self[i] = self[0] } }}\n\npublic let shuffle = true")
+            let path = try SwiftPMProduct.packagePath(for: "FisherYates", packageRoot: packageRoot)
+            try localFileSystem.writeFileContents(path.appending(components: "src", "Fisher-Yates_Shuffle.swift"), bytes: "public extension Collection{ func shuffle() -> [Iterator.Element] {return []} }\n\npublic extension MutableCollection where Index == Int { mutating func shuffleInPlace() { for (i, _) in enumerated() { self[i] = self[0] } }}\n\npublic let shuffle = true")
 
             XCTAssertBuilds(prefix.appending(component: "app"))
             output = try popen(execpath)
@@ -288,6 +290,7 @@ class MiscellaneousTestCase: XCTestCase {
         fixture(name: "Miscellaneous/DependencyEdges/External") { prefix in
             let execpath = [prefix.appending(components: "root", ".build", "debug", "dep2").asString]
 
+            let packageRoot = prefix.appending(component: "root")
             XCTAssertBuilds(prefix.appending(component: "root"))
             var output = try popen(execpath)
             XCTAssertEqual(output, "Hello\n")
@@ -296,7 +299,8 @@ class MiscellaneousTestCase: XCTestCase {
             // llbuild does not realize the file has changed
             sleep(1)
 
-            try localFileSystem.writeFileContents(prefix.appending(components: "root", "Packages", "dep1-1.2.3", "Foo.swift"), bytes: "public let foo = \"Goodbye\"")
+            let path = try SwiftPMProduct.packagePath(for: "dep1", packageRoot: packageRoot)
+            try localFileSystem.writeFileContents(path.appending(components: "Foo.swift"), bytes: "public let foo = \"Goodbye\"")
 
             XCTAssertBuilds(prefix.appending(component: "root"))
             output = try popen(execpath)
@@ -314,13 +318,13 @@ class MiscellaneousTestCase: XCTestCase {
             XCTAssertFileExists(prefix.appending(components: ".build", "debug", "libProductName.\(Product.dynamicLibraryExtension)"))
         }
     }
-    
+
     func testProductWithNoModules() {
         fixture(name: "Miscellaneous/ProductWithNoModules") { prefix in
             XCTAssertBuildFails(prefix)
         }
     }
-    
+
     func testProductWithMissingModules() {
         fixture(name: "Miscellaneous/ProductWithMissingModules") { prefix in
             XCTAssertBuildFails(prefix)
@@ -350,7 +354,49 @@ class MiscellaneousTestCase: XCTestCase {
         XCTAssertFileExists(packageRoot.appending(components: ".build", "debug", "some_package.swiftmodule"))
     }
 
+    func testSecondBuildIsNullInModulemapGen() throws {
+        // Make sure that swiftpm doesn't rebuild second time if the modulemap is being generated.
+        fixture(name: "ClangModules/SwiftCMixed") { prefix in
+            var output = try executeSwiftBuild(prefix, configuration: .Debug, printIfError: true, Xcc: [], Xld: [], Xswiftc: [], env: [:])
+            XCTAssertFalse(output.isEmpty)
+            output = try executeSwiftBuild(prefix, configuration: .Debug, printIfError: true, Xcc: [], Xld: [], Xswiftc: [], env: [:])
+            XCTAssertTrue(output.isEmpty)
+        }
+    }
+
+    func testSwiftTestParallel() throws {
+        // Running swift-test fixtures on linux is not yet possible.
+      #if os(macOS)
+        fixture(name: "Miscellaneous/ParallelTestsPkg") { prefix in
+            // First try normal serial testing.
+            var output = try SwiftPMProduct.SwiftTest.execute([], chdir: prefix, printIfError: true)
+            XCTAssert(output.contains("Executed 2 tests"))
+            // Run tests in parallel.
+            output = try SwiftPMProduct.SwiftTest.execute(["--parallel"], chdir: prefix, printIfError: true)
+            XCTAssert(output.contains("testExample2"))
+            XCTAssert(output.contains("testExample1"))
+            XCTAssert(output.contains("100%"))
+        }
+      #endif
+    }
+
+    func testExecutableAsBuildOrderDependency() throws {
+        // Test that we can build packages which have modules depending on executable modules.
+        fixture(name: "Miscellaneous/ExecDependency") { prefix in
+            XCTAssertBuilds(prefix)
+        }
+    }
+
+    func testOverridingSwiftcArguments() throws {
+#if os(macOS)
+        fixture(name: "Miscellaneous/OverrideSwiftcArgs") { prefix in
+            try executeSwiftBuild(prefix, configuration: .Debug, printIfError: true, Xcc: [], Xld: [], Xswiftc: ["-target", "x86_64-apple-macosx10.20"], env: [:])
+        }
+#endif
+    }
+
     static var allTests = [
+        ("testExecutableAsBuildOrderDependency", testExecutableAsBuildOrderDependency),
         ("testPrintsSelectedDependencyVersion", testPrintsSelectedDependencyVersion),
         ("testPackageWithNoSources", testPackageWithNoSources),
         ("testPackageWithNoSourcesButDependency", testPackageWithNoSourcesButDependency),
@@ -377,6 +423,9 @@ class MiscellaneousTestCase: XCTestCase {
         ("testProductWithNoModules", testProductWithNoModules),
         ("testProductWithMissingModules", testProductWithMissingModules),
         ("testSpaces", testSpaces),
+        ("testSecondBuildIsNullInModulemapGen", testSecondBuildIsNullInModulemapGen),
+        ("testSwiftTestParallel", testSwiftTestParallel),
         ("testInitPackageNonc99Directory", testInitPackageNonc99Directory),
+        ("testOverridingSwiftcArguments", testOverridingSwiftcArguments),
     ]
 }

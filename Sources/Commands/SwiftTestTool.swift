@@ -36,13 +36,14 @@ extension TestError: CustomStringConvertible {
     }
 }
 
-private enum Mode: Argument, Equatable, CustomStringConvertible {
+public enum TestMode: Argument, Equatable, CustomStringConvertible {
     case usage
     case version
     case listTests
     case run(String?)
+    case runInParallel
 
-    init?(argument: String, pop: @escaping () -> String?) throws {
+    public init?(argument: String, pop: @escaping () -> String?) throws {
         switch argument {
         case "--help", "-h":
             self = .usage
@@ -53,12 +54,14 @@ private enum Mode: Argument, Equatable, CustomStringConvertible {
             self = .run(specifier)
         case "--version":
             self = .version
+        case "--parallel":
+            self = .runInParallel
         default:
             return nil
         }
     }
 
-    var description: String {
+    public var description: String {
         switch self {
         case .usage:
             return "--help"
@@ -67,11 +70,13 @@ private enum Mode: Argument, Equatable, CustomStringConvertible {
         case .run(let specifier):
             return specifier ?? ""
         case .version: return "--version"
+        case .runInParallel:
+            return "--parallel"
         }
     }
 }
 
-private func ==(lhs: Mode, rhs: Mode) -> Bool {
+public func ==(lhs: TestMode, rhs: TestMode) -> Bool {
     return lhs.description == rhs.description
 }
 
@@ -122,71 +127,55 @@ private enum TestToolFlag: Argument {
     }
 }
 
-private class TestToolOptions: Options {
-    var verbosity: Int = 0
+public class TestToolOptions: Options {
     var buildTests: Bool = true
-    var colorMode: ColorWrap.Mode = .Auto
     var flags = BuildFlags()
 }
 
 /// swift-test tool namespace
-public struct SwiftTestTool: SwiftTool {
-    let args: [String]
+public class SwiftTestTool: SwiftTool<TestMode, TestToolOptions> {
 
-    public init(args: [String]) {
-        self.args = args
-    }
-    
-    public func run() {
-        do {
-            let (mode, opts) = try parseOptions(commandLineArguments: args)
-        
-            verbosity = Verbosity(rawValue: opts.verbosity)
-            colorMode = opts.colorMode
+    override func runImpl() throws {
 
-            if let dir = opts.chdir {
-                try chdir(dir.asString)
-            }
+        switch mode {
+        case .usage:
+            SwiftTestTool.usage()
 
-            switch mode {
-            case .usage:
-                usage()
-        
-            case .version:
-                print(Versioning.currentVersion.completeDisplayString)
-        
-            case .listTests:
-                let testPath = try buildTestsIfNeeded(opts)
-                let testSuites = try getTestSuites(path: testPath)
-                // Print the tests.
-                for testSuite in testSuites {
-                    for testCase in testSuite.tests {
-                        for test in testCase.tests {
-                            print(testCase.name + "/" + test)
-                        }
+        case .version:
+            print(Versioning.currentVersion.completeDisplayString)
+
+        case .listTests:
+            let testPath = try buildTestsIfNeeded(options)
+            let testSuites = try SwiftTestTool.getTestSuites(path: testPath)
+            // Print the tests.
+            for testSuite in testSuites {
+                for testCase in testSuite.tests {
+                    for test in testCase.tests {
+                        print(testCase.name + "/" + test)
                     }
                 }
-
-            case .run(let specifier):
-                let testPath = try buildTestsIfNeeded(opts)
-                let success = test(path: testPath, xctestArg: specifier)
-                exit(success ? 0 : 1)
             }
-        } catch Error.buildYAMLNotFound {
-            print("error: you must run `swift build` first", to: &stderr)
-            exit(1)
-        } catch {
-            handle(error: error, usage: usage)
+
+        case .run(let specifier):
+            let testPath = try buildTestsIfNeeded(options)
+            let success: Bool = TestRunner(path: testPath, xctestArg: specifier).test()
+            exit(success ? 0 : 1)
+
+        case .runInParallel:
+            let testPath = try buildTestsIfNeeded(options)
+            let runner = ParallelTestRunner(testPath: testPath)
+            try runner.run()
+            exit(runner.success ? 0 : 1)
         }
     }
 
     /// Builds the "test" target if enabled in options.
     ///
     /// - Returns: The path to the test binary.
-    private func buildTestsIfNeeded(_ opts: TestToolOptions) throws -> AbsolutePath {
-        let graph = try loadPackage(at: opts.path.root, opts)
-        if opts.buildTests {
-            let yaml = try describe(opts.path.build, configuration, graph, flags: opts.flags, toolchain: UserToolchain())
+    private func buildTestsIfNeeded(_ options: TestToolOptions) throws -> AbsolutePath {
+        let graph = try loadPackage()
+        if options.buildTests {
+            let yaml = try describe(buildPath, configuration, graph, flags: options.flags, toolchain: UserToolchain())
             try build(yamlPath: yaml, target: "test")
         }
                 
@@ -206,7 +195,7 @@ public struct SwiftTestTool: SwiftTool {
         } else if testProducts.count > 1 {
             throw TestError.multipleTestProducts
         } else {
-            return opts.path.build.appending(RelativePath(configuration.dirname)).appending(component: testProducts[0].name + ".xctest")
+            return buildPath.appending(RelativePath(configuration.dirname)).appending(component: testProducts[0].name + ".xctest")
         }
     }
 
@@ -214,7 +203,7 @@ public struct SwiftTestTool: SwiftTool {
     // to solve the testability problem first.
     private let configuration = Build.Configuration.debug
 
-    private func usage(_ print: (String) -> Void = { print($0) }) {
+    override class func usage(_ print: (String) -> Void = { print($0) }) {
         //     .........10.........20.........30.........40.........50.........60.........70..
         print("OVERVIEW: Build and run tests")
         print("")
@@ -236,69 +225,41 @@ public struct SwiftTestTool: SwiftTool {
         print("NOTE: Use `swift package` to perform other functions on packages")
     }
 
-    private func parseOptions(commandLineArguments args: [String]) throws -> (Mode, TestToolOptions) {
-        let (mode, flags): (Mode?, [TestToolFlag]) = try Basic.parseOptions(arguments: args)
+    override class func parse(commandLineArguments args: [String]) throws -> (TestMode, TestToolOptions) {
+        let (mode, flags): (TestMode?, [TestToolFlag]) = try Basic.parseOptions(arguments: args)
 
-        let opts = TestToolOptions()
+        let options = TestToolOptions()
         for flag in flags {
             switch flag {
             case .chdir(let path):
-                opts.chdir = path
+                options.chdir = path
             case .verbose(let amount):
-                opts.verbosity += amount
+                options.verbosity += amount
             case .xcc(let value):
-                opts.flags.cCompilerFlags.append(value)
+                options.flags.cCompilerFlags.append(value)
             case .xld(let value):
-                opts.flags.linkerFlags.append(value)
+                options.flags.linkerFlags.append(value)
             case .xswiftc(let value):
-                opts.flags.swiftCompilerFlags.append(value)
-            case .buildPath(let buildPath):
-                opts.path.build = buildPath
+                options.flags.swiftCompilerFlags.append(value)
+            case .buildPath(let path):
+                options.buildPath = path
             case .enableNewResolver:
-                opts.enableNewResolver = true
+                options.enableNewResolver = true
             case .colorMode(let mode):
-                opts.colorMode = mode
+                options.colorMode = mode
             case .skipBuild:
-                opts.buildTests = false
+                options.buildTests = false
             }
         }
 
-        return (mode ?? .run(nil), opts)
-    }
-
-    /// Executes the XCTest binary with given arguments.
-    ///
-    /// - Parameters:
-    ///     - path: Path to a valid XCTest binary.
-    ///     - xctestArg: Arguments to pass to the XCTest binary.
-    ///
-    /// - Returns: True if execution exited with return code 0.
-    private func test(path: AbsolutePath, xctestArg: String? = nil) -> Bool {
-        var args: [String] = []
-      #if os(macOS)
-        args = ["xcrun", "xctest"]
-        if let xctestArg = xctestArg {
-            args += ["-XCTest", xctestArg]
-        }
-        args += [path.asString]
-      #else
-        args += [path.asString]
-        if let xctestArg = xctestArg {
-            args += [xctestArg]
-        }
-      #endif
-
-        // Execute the XCTest with inherited environment as it is convenient to pass senstive
-        // information like username, password etc to test cases via environment variables.
-        let result: Void? = try? system(args, environment: ProcessInfo.processInfo.environment)
-        return result != nil
+        return (mode ?? .run(nil), options)
     }
 
     /// Locates XCTestHelper tool inside the libexec directory and bin directory.
     /// Note: It is a fatalError if we are not able to locate the tool.
     ///
     /// - Returns: Path to XCTestHelper tool.
-    private func xctestHelperPath() -> AbsolutePath {
+    private static func xctestHelperPath() -> AbsolutePath {
         let xctestHelperBin = "swiftpm-xctest-helper"
         let binDirectory = AbsolutePath(CommandLine.arguments.first!, relativeTo: currentWorkingDirectory).parentDirectory
         // XCTestHelper tool is installed in libexec.
@@ -325,11 +286,11 @@ public struct SwiftTestTool: SwiftTool {
     /// - Throws: TestError, SystemError, Utility.Errror
     ///
     /// - Returns: Array of TestSuite
-    private func getTestSuites(path: AbsolutePath) throws -> [TestSuite] {
+    fileprivate static func getTestSuites(path: AbsolutePath) throws -> [TestSuite] {
         // Run the correct tool.
       #if os(macOS)
         let tempFile = try TemporaryFile()
-        let args = [xctestHelperPath().asString, path.asString, tempFile.path.asString]
+        let args = [SwiftTestTool.xctestHelperPath().asString, path.asString, tempFile.path.asString]
         try system(args, environment: ["DYLD_FRAMEWORK_PATH": try platformFrameworksPath().asString])
         // Read the temporary file's content.
         let data = try fopen(tempFile.path).readFileContents()
@@ -339,6 +300,212 @@ public struct SwiftTestTool: SwiftTool {
       #endif
         // Parse json and return TestSuites.
         return try TestSuite.parse(jsonString: data)
+    }
+}
+
+/// A class to run tests on a XCTest binary.
+///
+/// Note: Executes the XCTest with inherited environment as it is convenient to pass senstive
+/// information like username, password etc to test cases via enviornment variables.
+final class TestRunner {
+    /// Path to valid XCTest binary.
+    private let path: AbsolutePath
+
+    /// Arguments to pass to XCTest if any.
+    private let xctestArg: String?
+
+    /// Creates an instance of TestRunner.
+    ///
+    /// - Parameters:
+    ///     - path: Path to valid XCTest binary.
+    ///     - xctestArg: Arguments to pass to XCTest.
+    init(path: AbsolutePath, xctestArg: String? = nil) {
+        self.path = path
+        self.xctestArg = xctestArg
+    }
+
+    /// Constructs arguments to execute XCTest.
+    private func args() -> [String] {
+        var args: [String] = []
+      #if os(macOS)
+        args = ["xcrun", "xctest"]
+        if let xctestArg = xctestArg {
+            args += ["-XCTest", xctestArg]
+        }
+        args += [path.asString]
+      #else
+        args += [path.asString]
+        if let xctestArg = xctestArg {
+            args += [xctestArg]
+        }
+      #endif
+        return args
+    }
+
+    /// Current inherited enviornment variables.
+    private var environment: [String: String] {
+        return ProcessInfo.processInfo.environment
+    }
+
+    /// Executes the tests without printing anything on standard streams.
+    ///
+    /// - Returns: A tuple with first bool member indicating if test execution returned code 0
+    ///            and second argument containing the output of the execution.
+    func test() -> (Bool, String) {
+        var output = ""
+        var success = true
+        do {
+            try popen(args(), redirectStandardError: true, environment: environment) { line in
+                output += line
+            }
+        } catch {
+            success = false
+        }
+        return (success, output)
+    }
+
+    /// Executes and returns execution status. Prints test output on standard streams.
+    func test() -> Bool {
+        let result: Void? = try? system(args(), environment: environment)
+        return result != nil
+    }
+}
+
+/// A class to run tests in parallel.
+final class ParallelTestRunner {
+    /// A structure representing an individual unit test.
+    struct UnitTest {
+        /// The name of the unit test.
+        let name: String
+
+        /// The name of the test case.
+        let testCase: String
+
+        /// The specifier argument which can be passed to XCTest.
+        var specifier: String {
+            return testCase + "/" + name
+        }
+    }
+
+    /// An enum representing result of a unit test execution.
+    enum TestResult {
+        case success(UnitTest)
+        case failure(UnitTest, output: String)
+    }
+
+    /// Path to XCTest binary.
+    private let testPath: AbsolutePath
+
+    /// The queue containing list of tests to run (producer).
+    private let pendingTests = SynchronizedQueue<UnitTest?>()
+
+    /// The queue containing tests which are finished running.
+    private let finishedTests = SynchronizedQueue<TestResult?>()
+
+    /// Number of parallel workers to spawn.
+    private var numJobs: Int {
+        return ProcessInfo.processInfo.activeProcessorCount
+    }
+
+    /// Instance of progress bar. Animating progress bar if stream is a terminal otherwise
+    /// a simple progress bar.
+    private let progressBar: ProgressBarProtocol
+
+    /// Number of tests that will be executed.
+    private var numTests = 0
+
+    /// Number of the current tests that has been executed.
+    private var numCurrentTest = 0
+
+    /// True if all tests executed successfully.
+    private(set) var success: Bool = true
+
+    init(testPath: AbsolutePath) {
+        self.testPath = testPath
+        progressBar = createProgressBar(forStream: stdoutStream, header: "Tests")
+    }
+
+    /// Updates the progress bar status.
+    private func updateProgress(for test: UnitTest) {
+        numCurrentTest += 1
+        progressBar.update(percent: 100*numCurrentTest/numTests, text: test.specifier)
+    }
+
+    func enqueueTests() throws {
+        // Find all the test suites present in the test binary.
+        let testSuites = try SwiftTestTool.getTestSuites(path: testPath)
+        // FIXME: Add a count property in SynchronizedQueue.
+        var numTests = 0
+        // Enqueue all the tests.
+        for testSuite in testSuites {
+            for testCase in testSuite.tests {
+                for test in testCase.tests {
+                    numTests += 1
+                    pendingTests.enqueue(UnitTest(name: test, testCase: testCase.name))
+                }
+            }
+        }
+        self.numTests = numTests
+        self.numCurrentTest = 0
+        // Enqueue the sentinels, we stop a thread when it encounters a sentinel in the queue.
+        for _ in 0..<numJobs {
+            pendingTests.enqueue(nil)
+        }
+    }
+
+    /// Executes the tests spawning parallel workers. Blocks calling thread until all workers are finished.
+    func run() throws {
+        // Enqueue all the tests.
+        try enqueueTests()
+
+        // Create the worker threads.
+        let workers: [Thread] = (0..<numJobs).map { _ in
+            let thread = Thread {
+                // Dequeue a specifier and run it till we encounter nil.
+                while let test = self.pendingTests.dequeue() {
+                    let testRunner = TestRunner(path: self.testPath, xctestArg: test.specifier)
+                    let (success, output) = testRunner.test()
+                    if success {
+                        self.finishedTests.enqueue(.success(test))
+                    } else {
+                        self.success = false
+                        self.finishedTests.enqueue(.failure(test, output: output))
+                    }
+                }
+            }
+            thread.start()
+            return thread
+        }
+
+        // Holds the output of test cases which failed.
+        var failureOutput = [String]()
+        // Report (consume) the tests which have finished running.
+        while let result = finishedTests.dequeue() {
+            switch result {
+            case .success(let test):
+                updateProgress(for: test)
+            case .failure(let test, let output):
+                updateProgress(for: test)
+                failureOutput.append(output)
+            }
+            // We can't enqueue a sentinel into finished tests queue because we won't know
+            // which test is last one so exit this when all the tests have finished running.
+            if numCurrentTest == numTests { break }
+        }
+
+        // Wait till all threads finish execution.
+        workers.forEach { $0.join() }
+        progressBar.complete()
+        printFailures(failureOutput)
+    }
+
+    /// Prints the output of the tests that failed.
+    private func printFailures(_ failureOutput: [String]) {
+        stdoutStream <<< "\n"
+        for error in failureOutput {
+            stdoutStream <<< error
+        }
+        stdoutStream.flush()
     }
 }
 

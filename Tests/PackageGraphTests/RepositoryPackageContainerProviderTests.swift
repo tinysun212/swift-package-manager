@@ -44,6 +44,18 @@ private class MockRepository: Repository {
         return Revision(identifier: tag)
     }
 
+    func fetch() throws {
+        fatalError("Unexpected API call")
+    }
+
+    func exists(revision: Revision) -> Bool {
+        fatalError("Unexpected API call")
+    }
+
+    func remove() throws {
+        fatalError("Unexpected API call")
+    }
+
     func openFileView(revision: Revision) throws -> FileSystem {
         assert(versions.index(forKey: Version(revision.identifier)!) != nil)
         // This isn't actually used, see `MockManifestLoader`.
@@ -82,7 +94,7 @@ private class MockRepositories: RepositoryProvider {
         return repositories[repository.url]!
     }
 
-    func cloneCheckout(repository: RepositorySpecifier, at sourcePath: AbsolutePath, to destinationPath: AbsolutePath) throws {
+    func cloneCheckout(repository: RepositorySpecifier, at sourcePath: AbsolutePath, to destinationPath: AbsolutePath, editable: Bool) throws {
         fatalError("unexpected API call")
     }
 
@@ -91,13 +103,18 @@ private class MockRepositories: RepositoryProvider {
     }
 }
 
-private class MockResolverDelegate: DependencyResolverDelegate {
+private class MockResolverDelegate: DependencyResolverDelegate, RepositoryManagerDelegate {
     typealias Identifier = RepositoryPackageContainer.Identifier
 
     var addedContainers: [Identifier] = []
+    var fetched = [RepositorySpecifier]()
 
     func added(container identifier: Identifier) {
         addedContainers.append(identifier)
+    }
+
+    func fetching(handle: RepositoryManager.RepositoryHandle, to path: AbsolutePath) {
+        fetched += [handle.repository]
     }
 }
 
@@ -110,10 +127,10 @@ private struct MockDependencyResolver {
     init(repositories: MockRepository...) {
         self.tmpDir = try! TemporaryDirectory()
         self.repositories = MockRepositories(repositories: repositories)
-        let checkoutManager = CheckoutManager(path: self.tmpDir.path, provider: self.repositories)
-        let provider = RepositoryPackageContainerProvider(
-            checkoutManager: checkoutManager, manifestLoader: self.repositories.manifestLoader)
         self.delegate = MockResolverDelegate()
+        let repositoryManager = RepositoryManager(path: self.tmpDir.path, provider: self.repositories, delegate: self.delegate)
+        let provider = RepositoryPackageContainerProvider(
+            repositoryManager: repositoryManager, manifestLoader: self.repositories.manifestLoader)
         self.resolver = DependencyResolver(provider, delegate)
     }
 
@@ -175,6 +192,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
                     repoB.specifier: v2,
                 ])
             XCTAssertEqual(resolver.delegate.addedContainers, [repoA.specifier, repoB.specifier])
+            XCTAssertEqual(resolver.delegate.fetched, [repoA.specifier, repoB.specifier])
         }
     }
 

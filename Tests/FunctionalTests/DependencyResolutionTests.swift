@@ -15,6 +15,7 @@ import Basic
 import func POSIX.popen
 
 import TestSupport
+import SourceControl
 
 class DependencyResolutionTests: XCTestCase {
     func testInternalSimple() {
@@ -46,13 +47,16 @@ class DependencyResolutionTests: XCTestCase {
         // This will tag 'Foo' with 1.0.0, to start.
         fixture(name: "DependencyResolution/External/Simple", tags: ["1.0.0"]) { prefix in
             // Add several other tags to check version selection.
+            let repo = GitRepository(path: prefix.appending(components: "Foo"))
             for tag in ["1.1.0", "1.2.0", "1.2.3"] {
-                try tagGitRepo(prefix.appending(components: "Foo"), tag: tag)
+                try repo.tag(name: tag)
             }
 
-            XCTAssertBuilds(prefix.appending(component: "Bar"))
+            let packageRoot = prefix.appending(component: "Bar")
+            XCTAssertBuilds(packageRoot)
             XCTAssertFileExists(prefix.appending(components: "Bar", ".build", "debug", "Bar"))
-            XCTAssertDirectoryExists(prefix.appending(components: "Bar", "Packages", "Foo-1.2.3"))
+            let path = try SwiftPMProduct.packagePath(for: "Foo", packageRoot: packageRoot)
+            XCTAssert(GitRepository(path: path).tags.contains("1.2.3"))
         }
     }
 

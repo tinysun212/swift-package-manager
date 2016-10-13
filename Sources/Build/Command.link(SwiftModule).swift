@@ -21,7 +21,10 @@ extension Command {
         // Get the unique set of all input modules.
         //
         // FIXME: This needs to handle C language targets.
-        let buildables = OrderedSet(product.modules.flatMap{ [$0] + $0.recursiveDependencies }.flatMap{ $0 as? SwiftModule }).contents
+        let buildables = OrderedSet(product.modules.flatMap{ module in
+            // Filter out non library modules from recursive dependencies so that we don't link executable dependencies together.
+            return [module] + module.recursiveDependencies.filter{ $0.type == .library }
+        }.flatMap{ $0 as? SwiftModule }).contents
         
         var objects = buildables.flatMap { SwiftcTool(module: $0, prefix: prefix, otherArgs: [], executable: linkerExec.asString, conf: conf).objects }
 
@@ -46,8 +49,8 @@ extension Command {
 
         case .Library(.Static):
             let inputs = buildables.map{ $0.targetName } + objects.map{ $0.asString }
-            let outputs = [product.targetName, outpath.asString]
-            return Command(node: product.targetName, tool: ArchiveTool(inputs: inputs, outputs: outputs))
+            let outputs = [outpath.asString]
+            return Command(name: product.targetName, tool: ArchiveTool(inputs: inputs, outputs: outputs))
         }
 
       #if CYGWIN
@@ -108,9 +111,9 @@ extension Command {
         let shell = ShellTool(
             description: "Linking \(outpath.prettyPath)",
             inputs: objects.map{ $0.asString },
-            outputs: [product.targetName, outpath.asString],
+            outputs: [outpath.asString],
             args: args)
 
-        return Command(node: product.targetName, tool: shell)
+        return Command(name: product.targetName, tool: shell)
     }
 }

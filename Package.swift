@@ -60,7 +60,7 @@ let package = Package(
 
         // MARK: Additional Test Dependencies
 
-        Target( name: "TestSupport", dependencies: ["Basic", "POSIX", "PackageLoading", "Utility"]),
+        Target( name: "TestSupport", dependencies: ["Basic", "POSIX", "PackageGraph", "PackageLoading", "SourceControl", "Utility"]),
         
         Target( name: "BasicTests", dependencies: ["TestSupport"]),
         Target( name: "BuildTests", dependencies: ["Build", "TestSupport"]),
@@ -68,8 +68,10 @@ let package = Package(
         Target( name: "FunctionalTests", dependencies: ["Basic", "Utility", "PackageModel", "TestSupport"]),
         Target( name: "GetTests", dependencies: ["Get", "TestSupport"]),
         Target( name: "PackageLoadingTests", dependencies: ["PackageLoading", "TestSupport"]),
+        Target( name: "PackageGraphTests", dependencies: ["PackageGraph", "TestSupport"]),
         Target( name: "SourceControlTests", dependencies: ["SourceControl", "TestSupport"]),
         Target( name: "UtilityTests", dependencies: ["Utility", "TestSupport"]),
+        Target( name: "XcodeprojTests", dependencies: ["Xcodeproj", "TestSupport"]),
     ])
 
 

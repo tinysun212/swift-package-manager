@@ -9,6 +9,7 @@
 */
 
 import Basic
+import Dispatch
 import Utility
 
 import func POSIX.getenv
@@ -52,7 +53,7 @@ public class GitRepositoryProvider: RepositoryProvider {
             let env = ProcessInfo.processInfo.environment
             try system(
                 Git.tool, "clone", "--bare", repository.url, path.asString,
-                environment: env, message: "Cloning \(repository.url)")
+                environment: env, message: nil)
         } catch POSIX.Error.exitStatus {
             // Git 2.0 or higher is required
             if let majorVersion = Git.majorVersionNumber, majorVersion < 2 {
@@ -64,30 +65,45 @@ public class GitRepositoryProvider: RepositoryProvider {
     }
 
     public func open(repository: RepositorySpecifier, at path: AbsolutePath) -> Repository {
-        return GitRepository(path: path)
+        return GitRepository(path: path, isWorkingRepo: false)
     }
 
     public func cloneCheckout(
         repository: RepositorySpecifier,
         at sourcePath: AbsolutePath,
-        to destinationPath: AbsolutePath
+        to destinationPath: AbsolutePath,
+        editable: Bool
     ) throws {
-        // Clone using a shared object store with the canonical copy.
-        //
-        // We currently expect using shared storage here to be safe because we
-        // only ever expect to attempt to use the working copy to materialize a
-        // revision we selected in response to dependency resolution, and if we
-        // re-resolve such that the objects in this repository changed, we would
-        // only ever expect to get back a revision that remains present in the
-        // object storage.
-        //
-        // NOTE: The above assumption may become violated once we have support
-        // for editable packages, if we are also using this method to get that
-        // copy. At that point we may need to expose control over this.
-        //
-        // FIXME: Need to think about & handle submodules.
-        try Git.runCommandQuietly([
-                Git.tool, "clone", "--shared", sourcePath.asString, destinationPath.asString])
+
+        if editable {
+            // For editable clones, i.e. the user is expected to directly work on them, first we create
+            // a clone from our cache of repositories and then we replace the remote to the one originally
+            // present in the bare repository.
+            try system(
+                    Git.tool, "clone", sourcePath.asString, destinationPath.asString, message: nil)
+            // The default name of the remote.
+            let origin = "origin"
+            // In destination repo remove the remote which will be pointing to the source repo.
+            let clone = GitRepository(path: destinationPath)
+            try clone.remove(remote: origin)
+            // Add the original remote to the new clone.
+            try clone.add(remote: origin, url: repository.url)
+            // FIXME: This is unfortunate that we have to fetch to update remote's data.
+            try clone.fetch()
+        } else {
+            // Clone using a shared object store with the canonical copy.
+            //
+            // We currently expect using shared storage here to be safe because we
+            // only ever expect to attempt to use the working copy to materialize a
+            // revision we selected in response to dependency resolution, and if we
+            // re-resolve such that the objects in this repository changed, we would
+            // only ever expect to get back a revision that remains present in the
+            // object storage.
+            //
+            // FIXME: Need to think about & handle submodules.
+            try system(
+                    Git.tool, "clone", "--shared", sourcePath.asString, destinationPath.asString, message: nil)
+        }
     }
 
     public func openCheckout(at path: AbsolutePath) throws -> WorkingCheckout {
@@ -100,7 +116,7 @@ enum GitInterfaceError: Swift.Error {
     case malformedResponse(String)
 }
 
-/// A basic `git` repository.
+/// A basic `git` repository. This class is thread safe.
 //
 // FIXME: Currently, this class is serving two goals, it is the Repository
 // interface used by `RepositoryProvider`, but is also a class which can be
@@ -203,14 +219,75 @@ public class GitRepository: Repository, WorkingCheckout {
     /// The path of the repository on disk.
     public let path: AbsolutePath
 
-    public init(path: AbsolutePath) {
+    /// The (serial) queue to execute git cli on.
+    private let queue = DispatchQueue(label: "org.swift.swiftpm.gitqueue")
+
+    /// If this repo is a work tree repo (checkout) as opposed to a bare repo.
+    let isWorkingRepo: Bool
+
+    public init(path: AbsolutePath, isWorkingRepo: Bool = true) {
         self.path = path
+        self.isWorkingRepo = isWorkingRepo
+        do {
+            let isBareRepo = try Git.runPopen([Git.tool, "-C", path.asString, "rev-parse", "--is-bare-repository"]).chomp() == "true"
+            assert(isBareRepo != isWorkingRepo)
+        } catch {
+            // Ignore if we couldn't run popen for some reason.
+        }
+    }
+
+    /// Adds a remote to the git repository.
+    ///
+    /// - parameters:
+    ///   - remote: The name of the remote. It shouldn't already be present.
+    ///   - url: The url of the remote.
+    func add(remote: String, url: String) throws {
+        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "add", remote, url])
+    }
+
+    /// Removes a remote from the git repository.
+    ///
+    /// - parameters:
+    ///   - remote: The name of the remote to be removed. It should already be present.
+    ///   - url: the url of the remote.
+    func remove(remote: String) throws {
+        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "remove", remote])
+    }
+
+    /// Gets the current list of remotes of the repository.
+    ///
+    /// - Returns: An array of tuple containing name and url of the remote.
+    public func remotes() throws -> [(name: String, url: String)] {
+        return try queue.sync {
+            // Get the remote names.
+            let remoteNamesOutput = try Git.runPopen([Git.tool, "-C", path.asString, "remote"]).chomp()
+            let remoteNames = remoteNamesOutput.characters.split(separator: "\n").map(String.init)
+            return try remoteNames.map { name in
+                // For each remote get the url.
+                let url = try Git.runPopen([Git.tool, "-C", path.asString, "config", "--get", "remote.\(name).url"]).chomp()
+                return (name, url)
+            }
+        }
     }
 
     // MARK: Repository Interface
 
-    public var tags: [String] { return tagsCache.getValue(self) }
-    private var tagsCache = LazyCache(getTags)
+    /// Returns the tags present in repository.
+    public var tags: [String] {
+        return queue.sync {
+            // Check if we already have the tags cached.
+            if let tags = tagsCache {
+                return tags
+            }
+            tagsCache = getTags()
+            return tagsCache!
+        }
+    }
+
+    /// Cache for the tags.
+    private var tagsCache: [String]? = nil
+
+    /// Returns the tags present in repository.
     private func getTags() -> [String] {
         // FIXME: Error handling.
         let tagList = try! Git.runPopen([Git.tool, "-C", path.asString, "tag", "-l"])
@@ -221,26 +298,70 @@ public class GitRepository: Repository, WorkingCheckout {
         return try Revision(identifier: resolveHash(treeish: tag, type: "commit").bytes.asString!)
     }
 
+    public func fetch() throws {
+        try runCommandQuietly([Git.tool, "-C", path.asString, "fetch", "--tags"]) {
+            self.tagsCache = nil
+        }
+    }
+
+    public func hasUncommitedChanges() -> Bool {
+        // Only a work tree can have changes.
+        guard isWorkingRepo else { return false }
+        return queue.sync {
+            // Detect if there is a staged or unstaged diff.
+            // This won't detect new untracked files, but it is
+            // just a safety measure for now.
+            let diffArgs = ["--no-ext-diff", "--quiet", "--exit-code"]
+            do {
+                _ = try Git.runPopen([Git.tool, "-C", path.asString, "diff"] + diffArgs)
+                _ = try Git.runPopen([Git.tool, "-C", path.asString, "diff", "--cached"] + diffArgs)
+            } catch {
+                return true
+            }
+            return false
+        }
+    }
+
     public func openFileView(revision: Revision) throws -> FileSystem {
         return try GitFileSystemView(repository: self, revision: revision)
     }
 
     // MARK: Working Checkout Interface
 
+    public func hasUnpushedCommits() throws -> Bool {
+        let hasOutput = try runPopen([Git.tool, "-C", path.asString, "log", "--branches", "--not", "--remotes"]).chomp().isEmpty
+        return !hasOutput
+    }
+
     public func getCurrentRevision() throws -> Revision {
-        return Revision(identifier: try Git.runPopen([Git.tool, "-C", path.asString, "rev-parse", "--verify", "HEAD"]).chomp())
+        return Revision(identifier: try runPopen([Git.tool, "-C", path.asString, "rev-parse", "--verify", "HEAD"]).chomp())
     }
 
     public func checkout(tag: String) throws {
         // FIXME: Audit behavior with off-branch tags in remote repositories, we
         // may need to take a little more care here.
-        try Git.runCommandQuietly([Git.tool, "-C", path.asString, "reset", "--hard", tag])
+        try runCommandQuietly([Git.tool, "-C", path.asString, "reset", "--hard", tag])
     }
 
     public func checkout(revision: Revision) throws {
         // FIXME: Audit behavior with off-branch tags in remote repositories, we
         // may need to take a little more care here.
-        try Git.runCommandQuietly([Git.tool, "-C", path.asString, "reset", "--hard", revision.identifier])
+        try runCommandQuietly([Git.tool, "-C", path.asString, "checkout", "-f", revision.identifier])
+    }
+
+    /// Returns true if a revision exists.
+    public func exists(revision: Revision) -> Bool {
+        do {
+           _ = try runCommandQuietly([Git.tool, "-C", path.asString, "rev-parse", "--verify", revision.identifier])
+        } catch {
+            return false
+        }
+        return true
+    }
+
+    public func checkout(newBranch: String) throws {
+        precondition(isWorkingRepo, "This operation should run in a working repo.")
+        try runCommandQuietly([Git.tool, "-C", path.asString, "checkout", "-b", newBranch])
     }
 
     // MARK: Git Operations
@@ -256,7 +377,7 @@ public class GitRepository: Repository, WorkingCheckout {
         } else {
             specifier = treeish
         }
-        let response = try Git.runPopen([Git.tool, "-C", path.asString, "rev-parse", "--verify", specifier]).chomp()
+        let response = try runPopen([Git.tool, "-C", path.asString, "rev-parse", "--verify", specifier]).chomp()
         if let hash = Hash(response) {
             return hash
         } else {
@@ -275,7 +396,7 @@ public class GitRepository: Repository, WorkingCheckout {
     /// Read a tree object.
     func read(tree hash: Hash) throws -> Tree {
         // Get the contents using `ls-tree`.
-        let treeInfo = try Git.runPopen([Git.tool, "-C", path.asString, "ls-tree", hash.bytes.asString!])
+        let treeInfo = try runPopen([Git.tool, "-C", path.asString, "ls-tree", hash.bytes.asString!])
 
         var contents: [Tree.Entry] = []
         for line in treeInfo.components(separatedBy: "\n") {
@@ -323,8 +444,23 @@ public class GitRepository: Repository, WorkingCheckout {
         // Get the contents using `cat-file`.
         //
         // FIXME: We need to get the raw bytes back, not a String.
-        let output = try Git.runPopen([Git.tool, "-C", path.asString, "cat-file", "-p", hash.bytes.asString!])
+        let output = try runPopen([Git.tool, "-C", path.asString, "cat-file", "-p", hash.bytes.asString!])
         return ByteString(encodingAsUTF8: output)
+    }
+
+    /// Runs the command in the serial queue and runs the completion closure if present.
+    private func runCommandQuietly(_ command: [String], completion: (() -> Void)? = nil) throws {
+        try queue.sync {
+            try Git.runCommandQuietly(command)
+            completion?()
+        }
+    }
+
+    /// Executes popen in the serial queue.
+    private func runPopen(_ command: [String]) throws -> String {
+        return try queue.sync {
+            return try Git.runPopen(command)
+        }
     }
 }
 
