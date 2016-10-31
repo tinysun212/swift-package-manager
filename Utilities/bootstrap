@@ -197,7 +197,7 @@ class Target(object):
         #
         # FIXME: The -j doesn't belong here, and should move into the
         # 'swift' tool.
-        other_args = ['-Onone', '-j%d' % g_num_cpus] + self.swiftflags
+        other_args = ['-I/usr/include', '-DCYGWIN', '-Onone', '-j%d' % g_num_cpus] + self.swiftflags
         if platform.system() == 'Darwin':
             other_args.extend(["-target", "x86_64-apple-macosx10.10"])
         if args.sysroot:
@@ -843,6 +843,7 @@ def main():
         embed_rpath = "$ORIGIN/../lib/swift/linux"
     elif platform.system().startswith('CYGWIN'):
         embed_rpath = "$ORIGIN/../lib/swift/cygwin"
+        build_flags.extend(['-Xswiftc', '-I/usr/include', '-Xswiftc', '-DCYGWIN'])
     else:
         embed_rpath = "@executable_path/../lib/swift/macosx"
     build_flags.extend(["-Xlinker", "-rpath", "-Xlinker", embed_rpath])
