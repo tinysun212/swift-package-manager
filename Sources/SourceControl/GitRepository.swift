@@ -9,12 +9,32 @@
 */
 
 import Basic
+#if !CYGWIN
 import Dispatch
+#endif
 import Utility
 
 import func POSIX.getenv
 import enum POSIX.Error
 import class Foundation.ProcessInfo
+
+#if CYGWIN
+public class DispatchQueue {
+  public init(label: String) {
+    lebel_ = label;
+  }
+  
+  var lebel_ : String;
+  
+  public func sync<R>(execute: () -> R) -> R {
+     return execute()
+  }
+
+  public func sync<R>(execute: () throws -> R) throws -> R {
+     return try execute()
+  }
+}
+#endif
 
 enum GitRepositoryProviderError: Swift.Error {
     case gitCloneFailure(url: String, path: AbsolutePath)
