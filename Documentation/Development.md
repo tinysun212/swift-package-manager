@@ -60,7 +60,7 @@ using a [snapshot](https://swift.org/download/#releases) from swift.org.
     code.
 	
     You can also use the built binaries: `swift-build`, `swift-package`,
-    `swift-test`.
+    `swift-test`, `swift-run`.
 	
 	
 	### Example:
@@ -92,7 +92,7 @@ $ cd swiftpm
 $ .build/debug/swift-build
 
 # Run a single test.
-$ .build/debug/swift-test -s BasicTests.GraphAlgorithmsTests/testCycleDetection
+$ .build/debug/swift-test --filter BasicTests.GraphAlgorithmsTests/testCycleDetection
 ```
 
 Note: If you make any changes to `PackageDescription` or `PackageDescription4`

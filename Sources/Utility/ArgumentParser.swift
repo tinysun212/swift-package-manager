@@ -35,15 +35,15 @@ extension ArgumentParserError: CustomStringConvertible {
     public var description: String {
         switch self {
         case .unknownOption(let option):
-            return "Unknown option \(option). Use --help to list available options"
+            return "unknown option \(option); use --help to list available options"
         case .invalidValue(let argument, let error):
-            return "\(error) for argument \(argument). Use --help to print usage"
+            return "\(error) for argument \(argument); use --help to print usage"
         case .expectedValue(let option):
-            return "Option \(option) requires a value. Provide a value using '\(option) <value>' or '\(option)=<value>'"
+            return "option \(option) requires a value; provide a value using '\(option) <value>' or '\(option)=<value>'"
         case .unexpectedArgument(let argument):
-            return "Unexpected argument \(argument). Use --help to list available arguments"
+            return "unexpected argument \(argument); use --help to list available arguments"
         case .expectedArguments(_, let arguments):
-            return "Expected arguments: \(arguments.joined(separator: ", ")).\n"
+            return "expected arguments: \(arguments.joined(separator: ", "))"
         }
     }
 }
@@ -66,9 +66,9 @@ extension ArgumentConversionError: CustomStringConvertible {
     public var description: String {
         switch self {
         case .unknown(let value):
-            return "Unknown value \(value)"
+            return "unknown value '\(value)'"
         case .typeMismatch(let value, let expectedType):
-            return "\(value) is not convertible to \(expectedType)"
+            return "'\(value)' is not convertible to \(expectedType)"
         case .custom(let reason):
             return reason
         }
@@ -811,7 +811,7 @@ public final class ArgumentParser {
         let maxWidth: Int
         // Figure out the max width based on argument length or choose the default width if max width is longer
         // than the default width.
-        if let maxArgument = (positionalArguments + optionArguments).map({ $0.name.characters.count }).max(),
+        if let maxArgument = (positionalArguments + optionArguments).map({ $0.name.count }).max(),
             maxArgument < maxWidthDefault {
             maxWidth = maxArgument + padding + 1
         } else {
@@ -822,7 +822,7 @@ public final class ArgumentParser {
         func print(formatted argument: String, usage: String, on stream: OutputByteStream) {
             // Start with a new line and add some padding.
             stream <<< "\n" <<< Format.asRepeating(string: " ", count: padding)
-            let count = argument.characters.count
+            let count = argument.count
             // If the argument name is more than the set width take the whole
             // line for it, otherwise we can fit everything in one line.
             if count >= maxWidth - padding {

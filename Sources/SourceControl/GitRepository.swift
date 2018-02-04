@@ -48,7 +48,7 @@ extension GitRepositoryProviderError: CustomStringConvertible {
     }
 
 public enum GitRepositoryProviderError: Swift.Error {
-    case gitCloneFailure(url: String, path: AbsolutePath, errorOutput: String)
+    case gitCloneFailure(errorOutput: String)
 }
 
 /// A `git` repository provider.
@@ -84,7 +84,7 @@ public class GitRepositoryProvider: RepositoryProvider {
         // Throw if cloning failed.
         guard result.exitStatus == .terminated(code: 0) else {
             let errorOutput = try (result.utf8Output() + result.utf8stderrOutput()).chuzzle() ?? ""
-            throw GitRepositoryProviderError.gitCloneFailure(url: repository.url, path: path, errorOutput: errorOutput)
+            throw GitRepositoryProviderError.gitCloneFailure(errorOutput: errorOutput)
         }
     }
 
@@ -282,7 +282,7 @@ public class GitRepository: Repository, WorkingCheckout {
             // Get the remote names.
             let remoteNamesOutput = try Process.checkNonZeroExit(
                 args: Git.tool, "-C", path.asString, "remote").chomp()
-            let remoteNames = remoteNamesOutput.characters.split(separator: "\n").map(String.init)
+            let remoteNames = remoteNamesOutput.split(separator: "\n").map(String.init)
             return try remoteNames.map({ name in
                 // For each remote get the url.
                 let url = try Process.checkNonZeroExit(
@@ -314,7 +314,7 @@ public class GitRepository: Repository, WorkingCheckout {
         // FIXME: Error handling.
         let tagList = try! Process.checkNonZeroExit(
             args: Git.tool, "-C", path.asString, "tag", "-l").chomp()
-        return tagList.characters.split(separator: "\n").map(String.init)
+        return tagList.split(separator: "\n").map(String.init)
     }
 
     public func resolveRevision(tag: String) throws -> Revision {
@@ -694,8 +694,8 @@ private class GitFileSystemView: FileSystem {
 extension GitRepositoryProviderError: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .gitCloneFailure(let url, let path, let errorOutput):
-            return "Failed to clone \(url) to \(path.asString):\n\(errorOutput)"
+        case .gitCloneFailure(let errorOutput):
+            return "failed to clone; \(errorOutput)"
         }
     }
 }

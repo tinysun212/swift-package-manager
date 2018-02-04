@@ -11,6 +11,7 @@
 import Basic
 import PackageModel
 import Utility
+import class Foundation.ProcessInfo
 
 /// Describes a tool which can be understood by llbuild's BuildSystem library.
 protocol ToolProtocol {
@@ -24,6 +25,17 @@ protocol ToolProtocol {
     ///
     /// This should append JSON or YAML content; if it is YAML it should be indented by 4 spaces.
     func append(to stream: OutputByteStream)
+}
+
+struct PhonyTool: ToolProtocol {
+    let inputs: [String]
+    let outputs: [String]
+
+    func append(to stream: OutputByteStream) {
+        stream <<< "    tool: phony\n"
+        stream <<< "    inputs: " <<< Format.asJSON(inputs) <<< "\n"
+        stream <<< "    outputs: " <<< Format.asJSON(outputs) <<< "\n"
+    }
 }
 
 struct ShellTool: ToolProtocol {
@@ -92,7 +104,7 @@ struct SwiftCompilerTool: ToolProtocol {
     /// The underlying Swift build target.
     let target: SwiftTargetDescription
 
-    static let numThreads = 8
+    static let numThreads = ProcessInfo.processInfo.activeProcessorCount
 
     init(target: SwiftTargetDescription, inputs: [String]) {
         self.target = target

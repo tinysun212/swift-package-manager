@@ -24,21 +24,9 @@ struct FetchDeprecatedDiagnostic: DiagnosticData {
         name: "org.swift.diags.fetch-deprecated",
         defaultBehavior: .warning,
         description: {
-            $0 <<< "'fetch' command is deprecated, use 'resolve' command instead."
+            $0 <<< "'fetch' command is deprecated; use 'resolve' instead"
         }
     )
-}
-
-/// Errors encountered duing the package tool operations.
-enum PackageToolOperationError: Swift.Error {
-    /// The provided package name doesn't exist in package graph.
-    case packageNotFound
-
-    /// The current mode does not have all the options it requires.
-    case insufficientOptions(usage: String)
-
-    /// The package is in editable state.
-    case packageInEditableState
 }
 
 /// swift-package tool namespace
@@ -167,7 +155,7 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
             switch options.outputPath {
             case let outpath? where outpath.suffix == ".xcodeproj":
                 // if user specified path ending with .xcodeproj, use that
-                projectName = String(outpath.basename.characters.dropLast(10))
+                projectName = String(outpath.basename.dropLast(10))
                 dstdir = outpath.parentDirectory
             case let outpath?:
                 dstdir = outpath
@@ -193,6 +181,16 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
             let manifest = graph.rootPackages[0].manifest
             print(try manifest.jsonString())
 
+        case .generateCompletionScript:
+            switch options.shell {
+            case .bash?:
+                bash_template(on: stdoutStream)
+            case .zsh?:
+                zsh_template(on: stdoutStream)
+            default:
+                preconditionFailure("somehow we ended up with an invalid positional argument")
+            }
+            
         case .help:
             parser.printUsage(on: stdoutStream)
         }
@@ -312,6 +310,17 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
                     isCodeCoverageEnabled: $2)
                 $0.outputPath = $3?.path
             })
+        
+        let generateCompletionScript = parser.add(
+            subparser: PackageMode.generateCompletionScript.rawValue,
+            overview: "Generate completion script (Bash or ZSH)")
+        binder.bind(
+            positional: generateCompletionScript.add(
+                positional: "flavor", kind: Shell.self,
+                usage: "Shell flavor (bash or zsh)"),
+            to: {
+                $0.shell = $1
+            })
 
         let resolveParser = parser.add(
             subparser: PackageMode.resolve.rawValue,
@@ -372,6 +381,7 @@ public class PackageToolOptions: ToolOptions {
 
     var outputPath: AbsolutePath?
     var xcodeprojOptions = XcodeprojOptions()
+    var shell: Shell?
 
     struct ResolveOptions {
         var packageName: String?
@@ -402,6 +412,7 @@ public enum PackageMode: String, StringEnumArgument {
     case edit
     case fetch
     case generateXcodeproj = "generate-xcodeproj"
+    case generateCompletionScript = "generate-completion-script"
     case initPackage = "init"
     case reset
     case resolve
@@ -454,18 +465,5 @@ extension PackageToolOptions.ResolveToolMode: StringEnumArgument {
             (text.rawValue, "resolve using text format"),
             (json.rawValue, "resolve using JSON format"),
         ])
-    }
-}
-
-extension PackageToolOperationError: CustomStringConvertible {
-    public var description: String {
-        switch self {
-        case .packageInEditableState:
-            return "The provided package is in editable state"
-        case .packageNotFound:
-            return "The provided package was not found"
-        case .insufficientOptions(let usage):
-            return usage
-        }
     }
 }

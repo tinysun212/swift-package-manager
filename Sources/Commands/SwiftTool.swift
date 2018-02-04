@@ -18,6 +18,7 @@ import SourceControl
 import Utility
 import Workspace
 import libc
+import func Foundation.NSUserName
 
 struct ChdirDeprecatedDiagnostic: DiagnosticData {
     static let id = DiagnosticID(
@@ -25,9 +26,33 @@ struct ChdirDeprecatedDiagnostic: DiagnosticData {
         name: "org.swift.diags.chdir-deprecated",
         defaultBehavior: .warning,
         description: {
-            $0 <<< "the '--chdir/-C' option is deprecated; use '--package-path' instead"
+            $0 <<< "'--chdir/-C' option is deprecated; use '--package-path' instead"
         }
     )
+}
+
+/// Diagnostic error when the tool could not find a named product.
+struct ProductNotFoundDiagnostic: DiagnosticData {
+    static let id = DiagnosticID(
+        type: ProductNotFoundDiagnostic.self,
+        name: "org.swift.diags.product-not-found",
+        defaultBehavior: .error,
+        description: { $0 <<< "no product named" <<< { "'\($0.productName)'" } }
+    )
+
+    let productName: String
+}
+
+/// Diagnostic error when the tool could not find a named target.
+struct TargetNotFoundDiagnostic: DiagnosticData {
+    static let id = DiagnosticID(
+        type: TargetNotFoundDiagnostic.self,
+        name: "org.swift.diags.target-not-found",
+        defaultBehavior: .error,
+        description: { $0 <<< "no target named" <<< { "'\($0.targetName)'" } }
+    )
+
+    let targetName: String
 }
 
 private class ToolWorkspaceDelegate: WorkspaceDelegate {
@@ -144,7 +169,16 @@ public class SwiftTool<Options: ToolOptions> {
             parser.add(
                 option: "-Xlinker", kind: [String].self, strategy: .oneByOne,
                 usage: "Pass flag through to all linker invocations"),
-            to: { $0.buildFlags = BuildFlags(xcc: $1, xswiftc: $2, xlinker: $3) })
+            to: {
+                $0.buildFlags.cCompilerFlags = $1
+                $0.buildFlags.swiftCompilerFlags = $2
+                $0.buildFlags.linkerFlags = $3
+            })
+        binder.bindArray(
+            option: parser.add(
+                option: "-Xcxx", kind: [String].self, strategy: .oneByOne,
+                usage: "Pass flag through to all C++ compiler invocations"),
+            to: { $0.buildFlags.cxxCompilerFlags = $1 })
 
         binder.bind(
             option: parser.add(
@@ -195,6 +229,16 @@ public class SwiftTool<Options: ToolOptions> {
             option: parser.add(option: "--verbose", shortName: "-v", kind: Bool.self,
                 usage: "Increase verbosity of informational output"),
             to: { $0.verbosity = $1 ? 1 : 0 })
+
+        binder.bind(
+            option: parser.add(option: "--no-static-swift-stdlib", kind: Bool.self,
+                usage: "Do not link Swift stdlib statically"),
+            to: { $0.shouldLinkStaticSwiftStdlib = !$1 })
+
+        binder.bind(
+            option: parser.add(option: "--static-swift-stdlib", kind: Bool.self,
+                usage: "Link Swift stdlib statically"),
+            to: { $0.shouldLinkStaticSwiftStdlib = $1 })
 
         // Let subclasses bind arguments.
         type(of: self).defineArguments(parser: parser, binder: binder)
@@ -366,23 +410,32 @@ public class SwiftTool<Options: ToolOptions> {
         return try _manifestLoader.dematerialize()
     }
 
-    /// Build the package graph using swift-build-tool.
-    func build(includingTests: Bool) throws {
-        try build(plan: buildPlan(), includingTests: includingTests)
+    /// Build a subset of products and targets using swift-build-tool.
+    func build(subset: BuildSubset) throws {
+        try build(plan: buildPlan(), subset: subset)
     }
     
-    /// Build the package graph using swift-build-tool.
-    func build(plan: BuildPlan, includingTests: Bool) throws {
+    /// Build a subset of products and targets using swift-build-tool.
+    func build(plan: BuildPlan, subset: BuildSubset) throws {
         guard !plan.graph.rootPackages[0].targets.isEmpty else {
             warning(message: "no targets to build in package")
             return
         }
 
+        guard let llbuildTargetName = subset.llbuildTargetName(for: plan.graph, diagnostics: diagnostics) else {
+            return
+        }
+
         let yaml = buildPath.appending(component: plan.buildParameters.configuration.dirname + ".yaml")
         // Generate llbuild manifest.
-        let llbuild = LLbuildManifestGenerator(plan)
+        let llbuild = LLBuildManifestGenerator(plan)
         try llbuild.generateManifest(at: yaml)
         assert(isFile(yaml), "llbuild manifest not present: \(yaml.asString)")
+
+        // Create a temporary directory for the build process.
+        let tempDirName = "org.swift.swiftpm.\(NSUserName())"
+        let tempDir = Basic.determineTempDirectory().appending(component: tempDirName)
+        try localFileSystem.createDirectory(tempDir, recursive: true)
 
         // Run the swift-build-tool with the generated manifest.
         var args = [String]()
@@ -392,21 +445,29 @@ public class SwiftTool<Options: ToolOptions> {
         // against arbitrary code execution. We only allow the permissions which
         // are absolutely necessary for performing a build.
         if !options.shouldDisableSandbox {
-            let allowedDirectories = [buildPath, BuildParameters.swiftpmTestCache].map(resolveSymlinks)
+            let allowedDirectories = [
+                tempDir,
+                buildPath,
+                BuildParameters.swiftpmTestCache
+            ].map(resolveSymlinks)
             args += ["sandbox-exec", "-p", sandboxProfile(allowedDirectories: allowedDirectories)]
         }
       #endif
 
-        args += [try getToolchain().llbuild.asString, "-f", yaml.asString]
-        if includingTests {
-            args.append("test")
-        }
+        args += [try getToolchain().llbuild.asString, "-f", yaml.asString, llbuildTargetName]
         if verbosity != .concise {
             args.append("-v")
         }
 
+        // Create the environment for llbuild.
+        var env = Process.env
+        // We override the temporary directory so tools assuming full access to
+        // the tmp dir can create files here freely, provided they respect this
+        // variable.
+        env["TMPDIR"] = tempDir.asString
+
         // Run llbuild and print output on standard streams.
-        let process = Process(arguments: args, redirectOutput: false)
+        let process = Process(arguments: args, environment: env, redirectOutput: false)
         try process.launch()
         try processSet.add(process)
         let result = try process.waitUntilExit()
@@ -414,18 +475,31 @@ public class SwiftTool<Options: ToolOptions> {
         guard result.exitStatus == .terminated(code: 0) else {
             throw ProcessResult.Error.nonZeroExit(result)
         }
+
+        // Create backwards-compatibilty symlink to old build path.
+        let oldBuildPath = buildPath.appending(component: options.configuration.dirname)
+        if exists(oldBuildPath) {
+            try removeFileTree(oldBuildPath)
+        }
+        try createSymlink(oldBuildPath, pointingAt: plan.buildParameters.buildPath, relative: true)
     }
 
     /// Generates a BuildPlan based on the tool's options.
     func buildPlan() throws -> BuildPlan {
         return try BuildPlan(
-            buildParameters: BuildParameters(
-                dataPath: buildPath,
-                configuration: options.configuration,
-                toolchain: try getToolchain(),
-                flags: options.buildFlags),
-            graph: try loadPackageGraph(),
+            buildParameters: buildParameters(),
+            graph: loadPackageGraph(),
             delegate: self)
+    }
+
+    /// Create build parameters.
+    func buildParameters() throws -> BuildParameters {
+        let toolchain = try getToolchain()
+        return BuildParameters(
+            dataPath: buildPath.appending(component: toolchain.destination.target),
+            configuration: options.configuration,
+            toolchain: toolchain,
+            flags: options.buildFlags)
     }
 
     /// Lazily compute the destination toolchain.
@@ -465,10 +539,49 @@ public class SwiftTool<Options: ToolOptions> {
     }
 }
 
+/// An enum representing what subset of the package to build.
+enum BuildSubset {
+    /// Represents the subset of all products and non-test targets.
+    case allExcludingTests
+
+    /// Represents the subset of all products and targets.
+    case allIncludingTests
+
+    /// Represents a specific product.
+    case product(String)
+
+    /// Represents a specific target.
+    case target(String)
+}
+
 extension SwiftTool: BuildPlanDelegate {
     public func warning(message: String) {
         // FIXME: Coloring would be nice.
         print("warning: " + message)
+    }
+}
+
+extension BuildSubset {
+    /// Returns the name of the llbuild target that corresponds to the build subset.
+    func llbuildTargetName(for graph: PackageGraph, diagnostics: DiagnosticsEngine) -> String? {
+        switch self {
+        case .allExcludingTests:
+            return LLBuildManifestGenerator.llbuildMainTargetName
+        case .allIncludingTests:
+            return LLBuildManifestGenerator.llbuildTestTargetName
+        case .product(let productName):
+            guard let product = graph.products.first(where: { $0.name == productName }) else {
+                diagnostics.emit(data: ProductNotFoundDiagnostic(productName: productName))
+                return nil
+            }
+            return product.llbuildTargetName
+        case .target(let targetName):
+            guard let target = graph.targets.first(where: { $0.name == targetName }) else {
+                diagnostics.emit(data: TargetNotFoundDiagnostic(targetName: targetName))
+                return nil
+            }
+            return target.llbuildTargetName
+        }
     }
 }
 
@@ -517,7 +630,7 @@ private func sandboxProfile(allowedDirectories: [AbsolutePath]) -> String {
         // For xcrun cache.
         stream <<< "    (regex #\"^\(directory.asString)/xcrun.*\")" <<< "\n"
         // For autolink files.
-        stream <<< "    (regex #\"^\(directory.asString)/.*\\.swift-[0-9a-f]+\\.autolink\")" <<< "\n"
+        stream <<< "    (regex #\"^\(directory.asString)/.*\\.(swift|c)-[0-9a-f]+\\.autolink\")" <<< "\n"
     }
     for directory in allowedDirectories {
         stream <<< "    (subpath \"\(directory.asString)\")" <<< "\n"

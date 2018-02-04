@@ -20,7 +20,7 @@ relative path of the target is declared, the Package Manager will look for
 a directory matching the name of the target in these places:
 
 Regular targets: package root, Sources, Source, src, srcs.  
-Regular targets: Tests, package root, Sources, Source, src, srcs. 
+Test targets: Tests, package root, Sources, Source, src, srcs. 
 
 ## Package Manifest File Format Reference
 
@@ -93,7 +93,7 @@ This property should only be used for system module packages. It can be used to
 provide _hints_ for users to install a System Module using a system package
 manager like homebrew, apt-get etc.
 
-_NOTE: SwiftPM will *never* execute the command, and only provide suggestions.
+_NOTE: SwiftPM will **never** execute the command, and only provide suggestions._
 
 ```swift
 import PackageDescription
