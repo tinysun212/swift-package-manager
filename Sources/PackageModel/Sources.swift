@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -17,11 +17,12 @@ public struct Sources {
     public let root: AbsolutePath
 
     public var paths: [AbsolutePath] {
-        return relativePaths.map{ root.appending($0) }
+        return relativePaths.map({ root.appending($0) })
     }
 
     public init(paths: [AbsolutePath], root: AbsolutePath) {
-        relativePaths = paths.map { $0.relative(to: root) }
+        let relativePaths = paths.map({ $0.relative(to: root) })
+        self.relativePaths = relativePaths.sorted(by: { $0.asString < $1.asString })
         self.root = root
     }
 }
@@ -73,6 +74,6 @@ public enum SupportedLanguageExtension: String {
     ///
     /// - Returns: Set of strings.
     private static func stringSet(_ extensions: SupportedLanguageExtension...) -> Set<String> {
-        return Set(extensions.map{ $0.rawValue })
+        return Set(extensions.map({ $0.rawValue }))
     }
 }

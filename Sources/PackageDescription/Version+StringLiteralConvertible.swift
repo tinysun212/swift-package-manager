@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -14,8 +14,8 @@ extension Version: ExpressibleByStringLiteral {
         if let version = Version(value.characters) {
             self.init(version)
         } else {
-            // If version can't be initialized using the string literal, report the error and initialize with a dummy value.
-            // This is done to fail the invoking tool (like swift build) gracefully rather than just crashing.
+            // If version can't be initialized using the string literal, report the error and initialize with a dummy
+            // value. This is done to fail the invoking tool (like swift build) gracefully rather than just crashing.
             errors.add("Invalid version string: \(value)")
             self.init(0, 0, 0)
         }
@@ -32,7 +32,7 @@ extension Version: ExpressibleByStringLiteral {
 
 extension Version {
 
-    init(_ version: Version) {
+    public init(_ version: Version) {
         major = version.major
         minor = version.minor
         patch = version.patch
@@ -50,7 +50,10 @@ extension Version {
 
         let requiredEndIndex = prereleaseStartIndex ?? metadataStartIndex ?? characters.endIndex
         let requiredCharacters = characters.prefix(upTo: requiredEndIndex)
-        let requiredComponents = requiredCharacters.split(separator: ".", maxSplits: 2, omittingEmptySubsequences: false).map{ String($0) }.flatMap{ Int($0) }.filter{ $0 >= 0 }
+        let requiredStringComponents = requiredCharacters
+            .split(separator: ".", maxSplits: 2, omittingEmptySubsequences: false)
+            .map(String.init)
+        let requiredComponents = requiredStringComponents.flatMap({ Int($0) }).filter({ $0 >= 0 })
 
         guard requiredComponents.count == 3 else {
             return nil
@@ -63,7 +66,7 @@ extension Version {
         if let prereleaseStartIndex = prereleaseStartIndex {
             let prereleaseEndIndex = metadataStartIndex ?? characters.endIndex
             let prereleaseCharacters = characters[characters.index(after: prereleaseStartIndex)..<prereleaseEndIndex]
-            prereleaseIdentifiers = prereleaseCharacters.split(separator: ".").map{ String($0) }
+            prereleaseIdentifiers = prereleaseCharacters.split(separator: ".").map(String.init)
         } else {
             prereleaseIdentifiers = []
         }

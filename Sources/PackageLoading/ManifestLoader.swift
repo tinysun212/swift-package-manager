@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -9,7 +9,6 @@
 */
 
 import Basic
-import PackageDescription
 import PackageModel
 import Utility
 
@@ -17,11 +16,16 @@ import func POSIX.realpath
 
 public enum ManifestParseError: Swift.Error {
     /// The manifest file is empty.
-    case emptyManifestFile
+    case emptyManifestFile(url: String, version: String?)
+
     /// The manifest had a string encoding error.
     case invalidEncoding
+
     /// The manifest contains invalid format.
-    case invalidManifestFormat([String]?)
+    case invalidManifestFormat(String)
+
+    /// The manifest was successfully loaded by swift interpreter but there were runtime issues.
+    case runtimeManifestErrors([String])
 }
 
 /// Resources required for manifest loading.
@@ -30,10 +34,30 @@ public enum ManifestParseError: Swift.Error {
 /// using the package manager with alternate toolchains in the future.
 public protocol ManifestResourceProvider {
     /// The path of the swift compiler.
-    var swiftCompilerPath: AbsolutePath { get }
+    var swiftCompiler: AbsolutePath { get }
 
     /// The path of the library resources.
-    var libraryPath: AbsolutePath { get }
+    var libDir: AbsolutePath { get }
+
+    /// The path to SDK root.
+    ///
+    /// If provided, it will be passed to the swift interpreter.
+    var sdkRoot: AbsolutePath? { get }
+}
+
+/// Default implemention for the resource provider.
+public extension ManifestResourceProvider {
+
+    var sdkRoot: AbsolutePath? {
+        return nil
+    }
+}
+
+extension ToolsVersion {
+    /// Returns the manifest version for this tools version.
+    public var manifestVersion: ManifestVersion {
+        return major == 3 ? .three : .four
+    }
 }
 
 /// Protocol for the manifest loader interface.
@@ -44,8 +68,15 @@ public protocol ManifestLoaderProtocol {
     ///   - path: The root path of the package.
     ///   - baseURL: The URL the manifest was loaded from.
     ///   - version: The version the manifest is from, if known.
+    ///   - manifestVersion: The version of manifest to load.
     ///   - fileSystem: If given, the file system to load from (otherwise load from the local file system).
-    func load(packagePath path: AbsolutePath, baseURL: String, version: Version?, fileSystem: FileSystem?) throws -> Manifest
+    func load(
+        packagePath path: AbsolutePath,
+        baseURL: String,
+        version: Version?,
+        manifestVersion: ManifestVersion,
+        fileSystem: FileSystem?
+    ) throws -> Manifest
 }
 
 extension ManifestLoaderProtocol {
@@ -55,8 +86,20 @@ extension ManifestLoaderProtocol {
     ///   - path: The root path of the package.
     ///   - baseURL: The URL the manifest was loaded from.
     ///   - version: The version the manifest is from, if known.
-    public func load(packagePath path: AbsolutePath, baseURL: String, version: Version?) throws -> Manifest {
-        return try load(packagePath: path, baseURL: baseURL, version: version, fileSystem: nil)
+    ///   - fileSystem: The file system to load from.
+    public func load(
+        package path: AbsolutePath,
+        baseURL: String,
+        version: Version? = nil,
+        manifestVersion: ManifestVersion,
+        fileSystem: FileSystem? = nil
+    ) throws -> Manifest {
+        return try load(
+            packagePath: path,
+            baseURL: baseURL,
+            version: version,
+            manifestVersion: manifestVersion,
+            fileSystem: fileSystem)
     }
 }
 
@@ -68,22 +111,31 @@ extension ManifestLoaderProtocol {
 /// serialized form of the manifest (as implemented by `PackageDescription`'s
 /// `atexit()` handler) which is then deserialized and loaded.
 public final class ManifestLoader: ManifestLoaderProtocol {
-    let resources: ManifestResourceProvider
 
-    public init(resources: ManifestResourceProvider) {
+    let resources: ManifestResourceProvider
+    let isManifestSandboxEnabled: Bool
+
+    public init(
+        resources: ManifestResourceProvider,
+        isManifestSandboxEnabled: Bool = true
+    ) {
         self.resources = resources
+        self.isManifestSandboxEnabled = isManifestSandboxEnabled
     }
 
-    public func load(packagePath path: AbsolutePath, baseURL: String, version: Version?, fileSystem: FileSystem? = nil) throws -> Manifest {
-        // As per our versioning support, determine the appropriate manifest version to load.
-        for versionSpecificKey in Versioning.currentVersionSpecificKeys { 
-            let versionSpecificPath = path.appending(component: Manifest.basename + versionSpecificKey + ".swift")
-            if (fileSystem ?? localFileSystem).exists(versionSpecificPath) {
-                return try loadFile(path: versionSpecificPath, baseURL: baseURL, version: version, fileSystem: fileSystem)
-            }
-        }
-        
-        return try loadFile(path: path.appending(component: Manifest.filename), baseURL: baseURL, version: version, fileSystem: fileSystem)
+    public func load(
+        packagePath path: AbsolutePath,
+        baseURL: String,
+        version: Version?,
+        manifestVersion: ManifestVersion,
+        fileSystem: FileSystem? = nil
+    ) throws -> Manifest {
+        return try loadFile(
+            path: Manifest.path(atPackagePath: path, fileSystem: fileSystem ?? localFileSystem),
+            baseURL: baseURL,
+            version: version,
+            manifestVersion: manifestVersion,
+            fileSystem: fileSystem)
     }
 
     /// Create a manifest by loading a specific manifest file from the given `path`.
@@ -93,267 +145,190 @@ public final class ManifestLoader: ManifestLoaderProtocol {
     ///   - baseURL: The URL the manifest was loaded from.
     ///   - version: The version the manifest is from, if known.
     ///   - fileSystem: If given, the file system to load from (otherwise load from the local file system).
-    //
-    // FIXME: We should stop exposing this publicly, from a public perspective
-    // we should only ever load complete repositories.
-    public func loadFile(path inputPath: AbsolutePath, baseURL: String, version: Version?, fileSystem: FileSystem? = nil) throws -> Manifest {
+    func loadFile(
+        path inputPath: AbsolutePath,
+        baseURL: String,
+        version: Version?,
+        manifestVersion: ManifestVersion = .three,
+        fileSystem: FileSystem? = nil
+    ) throws -> Manifest {
         // If we were given a file system, load via a temporary file.
         if let fileSystem = fileSystem {
             let contents: ByteString
             do {
                 contents = try fileSystem.readFileContents(inputPath)
             } catch FileSystemError.noEntry {
-                throw PackageModel.Package.Error.noManifest(inputPath.asString)
+                throw PackageModel.Package.Error.noManifest(baseURL: baseURL, version: version?.description)
             }
-            let tmpFile = try TemporaryFile()
+            let tmpFile = try TemporaryFile(suffix: ".swift")
             try localFileSystem.writeFileContents(tmpFile.path, bytes: contents)
-            return try loadFile(path: tmpFile.path, baseURL: baseURL, version: version)
+            return try loadFile(
+                path: tmpFile.path,
+                baseURL: baseURL,
+                version: version,
+                manifestVersion: manifestVersion)
         }
 
         guard baseURL.chuzzle() != nil else { fatalError() }  //TODO
 
-        // Attempt to canonicalize the URL.
-        //
-        // This is important when the baseURL is a file system path, so that the
-        // URLs embedded into the manifest are canonical.
-        //
-        // FIXME: We really shouldn't be handling this here and in this fashion.
-        var baseURL = baseURL
-        if URL.scheme(baseURL) == nil {
-            if let resolved = try? realpath(baseURL) {
-                baseURL = resolved
-            }
+        // Validate that the file exists.
+        guard isFile(inputPath) else {
+            throw PackageModel.Package.Error.noManifest(baseURL: baseURL, version: version?.description)
         }
 
-        // Compute the actual input file path.
-        let path: AbsolutePath = isDirectory(inputPath) ? inputPath.appending(component: Manifest.filename) : inputPath
+        let parseResult = try parse(path: inputPath, manifestVersion: manifestVersion)
 
-        // Validate that the file exists.
-        guard isFile(path) else { throw PackageModel.Package.Error.noManifest(path.asString) }
-
-        // Load the manifest description.
-        guard let jsonString = try parse(path: path) else {
-            print("Empty manifest file is not supported anymore. Use `swift package init` to autogenerate.")
-            throw ManifestParseError.emptyManifestFile
+        // Get the json from manifest.
+        guard let jsonString = parseResult.jsonString else {
+            // FIXME: This only supports version right now, we need support for
+            // branch and revision too.
+            throw ManifestParseError.emptyManifestFile(url: baseURL, version: version?.description) 
         }
         let json = try JSON(string: jsonString)
-        let package = PackageDescription.Package.fromJSON(json, baseURL: baseURL)
-        let products = PackageDescription.Product.fromJSON(json)
-        let errors = parseErrors(json)
 
-        guard errors.isEmpty else {
-            throw ManifestParseError.invalidManifestFormat(errors)
+        // Load the correct version from JSON.
+        switch manifestVersion {
+        case .three:
+            let pd = try loadPackageDescription(json, baseURL: baseURL)
+            return Manifest(
+                path: inputPath,
+                url: baseURL,
+                package: .v3(pd.package),
+                legacyProducts: pd.products,
+                version: version,
+                interpreterFlags: parseResult.interpreterFlags)
+
+        case .four:
+            let package = try loadPackageDescription4(json, baseURL: baseURL)
+            return Manifest(
+                path: inputPath, url: baseURL, package: .v4(package),
+                version: version, interpreterFlags: parseResult.interpreterFlags)
         }
-
-        return Manifest(path: path, url: baseURL, package: package, products: products, version: version)
     }
 
     /// Parse the manifest at the given path to JSON.
-    private func parse(path manifestPath: AbsolutePath) throws -> String? {
+    private func parse(
+        path manifestPath: AbsolutePath,
+        manifestVersion: ManifestVersion
+    ) throws -> (jsonString: String?, interpreterFlags: [String]) {
+        // The compiler has special meaning for files with extensions like .ll, .bc etc.
+        // Assert that we only try to load files with extension .swift to avoid unexpected loading behavior.
+        assert(manifestPath.extension == "swift",
+               "Manifest files must contain .swift suffix in their name, given: \(manifestPath.asString).")
+
         // For now, we load the manifest by having Swift interpret it directly.
         // Eventually, we should have two loading processes, one that loads only the
         // the declarative package specification using the Swift compiler directly
         // and validates it.
-    
-        var cmd = [resources.swiftCompilerPath.asString]
+
+        // Compute the path to runtime we need to load.
+        let runtimePath = self.runtimePath(for: manifestVersion).asString
+        let interpreterFlags = self.interpreterFlags(for: manifestVersion)
+
+        var cmd = [String]()
+      #if os(macOS)
+        // If enabled, use sandbox-exec on macOS. This provides some safety against
+        // arbitrary code execution when parsing manifest files. We only allow
+        // the permissions which are absolutely necessary for manifest parsing.
+        if isManifestSandboxEnabled {
+            cmd += ["sandbox-exec", "-p", sandboxProfile()]
+        }
+      #endif
+        cmd += [resources.swiftCompiler.asString]
         cmd += ["--driver-mode=swift"]
         cmd += verbosity.ccArgs
     #if CYGWIN
         cmd += ["-D", "CYGWIN"]
         cmd += ["-I", "/usr/include"]
     #endif
-        cmd += ["-I", resources.libraryPath.asString]
-    
-        // When running from Xcode, load PackageDescription.framework
-        // else load the dylib version of it
-    #if Xcode
-        cmd += ["-F", resources.libraryPath.asString]
-        cmd += ["-framework", "PackageDescription"]
-    #else
-        cmd += ["-L", resources.libraryPath.asString, "-lPackageDescription"] 
-    #endif
-    
-    #if os(macOS)
-        cmd += ["-target", "x86_64-apple-macosx10.10"]
-    #endif
+        cmd += ["-L", runtimePath, "-lPackageDescription"]
+        cmd += interpreterFlags
         cmd += [manifestPath.asString]
 
         // Create and open a temporary file to write json to.
         let file = try TemporaryFile()
         // Pass the fd in arguments.
         cmd += ["-fileno", "\(file.fileHandle.fileDescriptor)"]
-        do {
-            try system(cmd)
-        } catch {
-            print("Can't parse Package.swift manifest file because it contains invalid format. Fix Package.swift file format and try again.")
-            throw ManifestParseError.invalidManifestFormat(nil)
+
+        // Run the command.
+        let result = try Process.popen(arguments: cmd)
+        let output = try (result.utf8Output() + result.utf8stderrOutput()).chuzzle()
+
+        // We expect output from interpreter to be empty, if something was emitted
+        // throw and report it.
+        if let output = output {
+            throw ManifestParseError.invalidManifestFormat(output)
         }
-    
+
         guard let json = try localFileSystem.readFileContents(file.path).asString else {
             throw ManifestParseError.invalidEncoding
         }
-    
-        return json.isEmpty ? nil : json
+
+        return (json.isEmpty ? nil : json, interpreterFlags)
+    }
+
+    /// Returns path to the sdk, if possible.
+    private func sdkRoot() -> AbsolutePath? {
+        if let sdkRoot = _sdkRoot {
+            return sdkRoot
+        }
+
+        // Find SDKROOT on macOS using xcrun.
+      #if os(macOS)
+        let foundPath = try? Process.checkNonZeroExit(
+            args: "xcrun", "--sdk", "macosx", "--show-sdk-path")
+        guard let sdkRoot = foundPath?.chomp(), !sdkRoot.isEmpty else {
+            return nil
+        }
+        _sdkRoot = AbsolutePath(sdkRoot)
+      #endif
+
+        return _sdkRoot
+    }
+    // Cache storage for computed sdk path.
+    private var _sdkRoot: AbsolutePath? = nil
+
+    /// Returns the interpreter flags for a manifest.
+    public func interpreterFlags(
+        for manifestVersion: ManifestVersion
+    ) -> [String] {
+        var cmd = [String]()
+        let runtimePath = self.runtimePath(for: manifestVersion)
+        cmd += ["-swift-version", String(manifestVersion.rawValue)]
+        cmd += ["-I", runtimePath.asString]
+      #if os(macOS)
+        cmd += ["-target", "x86_64-apple-macosx10.10"]
+      #endif
+        if let sdkRoot = resources.sdkRoot ?? self.sdkRoot() {
+            cmd += ["-sdk", sdkRoot.asString]
+        }
+        return cmd
+    }
+
+    /// Returns the runtime path given the manifest version and path to libDir.
+    private func runtimePath(for version: ManifestVersion) -> AbsolutePath {
+        return resources.libDir.appending(component: String(version.rawValue))
     }
 }
 
-// MARK: JSON Deserialization
-
-// We separate this out from the raw PackageDescription module, so that the code
-// we need to load to interpret the `Package.swift` manifests is as minimal as
-// possible.
-//
-// FIXME: These APIs are `internal` so they can be unit tested, but otherwise
-// could be private.
-
-extension PackageDescription.Package {
-    static func fromJSON(_ json: JSON, baseURL: String? = nil) -> PackageDescription.Package {
-        // This is a private API, currently, so we do not currently try and
-        // validate the input.
-        guard case .dictionary(let topLevelDict) = json else { fatalError("unexpected item") }
-        guard case .dictionary(let package)? = topLevelDict["package"] else { fatalError("missing package") }
-
-        guard case .string(let name)? = package["name"] else { fatalError("missing 'name'") }
-
-        var pkgConfig: String? = nil
-        if case .string(let value)? = package["pkgConfig"] {
-            pkgConfig = value
-        }
-
-        // Parse the targets.
-        var targets: [PackageDescription.Target] = []
-        if case .array(let array)? = package["targets"] {
-            targets = array.map(PackageDescription.Target.fromJSON)
-        }
-
-        var providers: [PackageDescription.SystemPackageProvider]? = nil
-        if case .array(let array)? = package["providers"] {
-            providers = array.map(PackageDescription.SystemPackageProvider.fromJSON)
-        }
-
-        // Parse the dependencies.
-        var dependencies: [PackageDescription.Package.Dependency] = []
-        if case .array(let array)? = package["dependencies"] {
-            dependencies = array.map { PackageDescription.Package.Dependency.fromJSON($0, baseURL: baseURL) }
-        }
-
-        // Parse the exclude folders.
-        var exclude: [String] = []
-        if case .array(let array)? = package["exclude"] {
-            exclude = array.map { element in
-                guard case .string(let excludeString) = element else { fatalError("exclude contains non string element") }
-                return excludeString
-            }
-        }
-
-        return PackageDescription.Package(name: name, pkgConfig: pkgConfig, providers: providers, targets: targets, dependencies: dependencies, exclude: exclude)
+/// Returns the sandbox profile to be used when parsing manifest on macOS.
+private func sandboxProfile() -> String {
+    let stream = BufferedOutputByteStream()
+    stream <<< "(version 1)" <<< "\n"
+    // Deny everything by default.
+    stream <<< "(deny default)" <<< "\n"
+    // Import the system sandbox profile.
+    stream <<< "(import \"system.sb\")" <<< "\n"
+    // Allow reading all files.
+    stream <<< "(allow file-read*)" <<< "\n"
+    // These are required by the Swift compiler.
+    stream <<< "(allow process*)" <<< "\n"
+    stream <<< "(allow sysctl*)" <<< "\n"
+    // Allow writing in temporary locations.
+    stream <<< "(allow file-write*" <<< "\n"
+    for directory in Platform.darwinCacheDirectories() {
+        stream <<< "    (regex #\"^\(directory.asString)/org\\.llvm\\.clang.*\")" <<< "\n"
     }
-}
-
-extension PackageDescription.Package.Dependency {
-    static func fromJSON(_ json: JSON, baseURL: String?) -> PackageDescription.Package.Dependency {
-        guard case .dictionary(let dict) = json else { fatalError("Unexpected item") }
-
-        guard case .string(let url)? = dict["url"],
-              case .dictionary(let versionDict)? = dict["version"],
-              case .string(let vv1)? = versionDict["lowerBound"],
-              case .string(let vv2)? = versionDict["upperBound"],
-              let v1 = Version(vv1), let v2 = Version(vv2)
-        else {
-            fatalError("Unexpected item")
-        }
-
-        func fixURL() -> String {
-            if let baseURL = baseURL, URL.scheme(url) == nil {
-                // If the URL has no scheme, we treat it as a path (either absolute or relative to the base URL).
-                return AbsolutePath(url, relativeTo: AbsolutePath(baseURL)).asString
-            } else {
-                return url
-            }
-        }
-
-        return PackageDescription.Package.Dependency.Package(url: fixURL(), versions: v1..<v2)
-    }
-}
-
-extension PackageDescription.SystemPackageProvider {
-    fileprivate static func fromJSON(_ json: JSON) -> PackageDescription.SystemPackageProvider {
-        guard case .dictionary(let dict) = json else { fatalError("unexpected item") }
-        guard case .string(let name)? = dict["name"] else { fatalError("missing name") }
-        guard case .string(let value)? = dict["value"] else { fatalError("missing value") }
-        switch name {
-        case "Brew":
-            return .Brew(value)
-        case "Apt":
-            return .Apt(value)
-        default:
-            fatalError("unexpected string")
-        }
-    }
-}
-
-extension PackageDescription.Target {
-    fileprivate static func fromJSON(_ json: JSON) -> PackageDescription.Target {
-        guard case .dictionary(let dict) = json else { fatalError("unexpected item") }
-        guard case .string(let name)? = dict["name"] else { fatalError("missing name") }
-
-        var dependencies: [PackageDescription.Target.Dependency] = []
-        if case .array(let array)? = dict["dependencies"] {
-            dependencies = array.map(PackageDescription.Target.Dependency.fromJSON)
-        }
-
-        return PackageDescription.Target(name: name, dependencies: dependencies)
-    }
-}
-
-extension PackageDescription.Target.Dependency {
-    fileprivate static func fromJSON(_ item: JSON) -> PackageDescription.Target.Dependency {
-        guard case .string(let name) = item else { fatalError("unexpected item") }
-        return .Target(name: name)
-    }
-}
-
-extension PackageDescription.Product {
-    private init(json: JSON) {
-        guard case .dictionary(let dict) = json else { fatalError("unexpected item") }
-        guard case .string(let name)? = dict["name"] else { fatalError("missing name") }
-
-        let type: ProductType
-        switch dict["type"] {
-        case .string("exe")?:
-            type = .Executable
-        case .string("a")?:
-            type = .Library(.Static)
-        case .string("dylib")?:
-            type = .Library(.Dynamic)
-        case .string("test")?:
-            type = .Test
-        default:
-            fatalError("missing type")
-        }
-
-        guard case .array(let mods)? = dict["modules"] else { fatalError("missing modules") }
-
-        let modules: [String] = mods.map { module in
-            guard case JSON.string(let string) = module else { fatalError("invalid modules") }
-            return string
-        }
-
-        self.init(name: name, type: type, modules: modules)
-    }
-
-    static func fromJSON(_ json: JSON) -> [PackageDescription.Product] {
-        guard case .dictionary(let topLevelDict) = json else { fatalError("unexpected item") }
-        guard case .array(let products)? = topLevelDict["products"] else { fatalError("missing products") }
-        return products.map(Product.init)
-    }
-}
-
-func parseErrors(_ json: JSON) -> [String] {
-    guard case .dictionary(let topLevelDict) = json else { fatalError("unexpected item") }
-    guard case .array(let errors)? = topLevelDict["errors"] else { fatalError("missing errors") }
-    return errors.map { error in
-        guard case .string(let string) = error else { fatalError("unexpected item") }
-        return string
-    }
+    stream <<< ")" <<< "\n"
+    return stream.bytes.asString!
 }

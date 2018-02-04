@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -23,40 +23,40 @@ class ReaddirTests: XCTestCase {
         do {
             var s = dirent()
             withUnsafeMutablePointer(to: &s.d_name) { ptr in
-                let ptr = unsafeBitCast(ptr, to: UnsafeMutablePointer<UInt8>.self)
+                let ptr = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
                 ptr[0] = UInt8(ascii: "A")
                 ptr[1] = UInt8(ascii: "B")
+                ptr[2] = 0
             }
-            s.d_namlen = 2
             XCTAssertEqual(s.name, "AB")
         }
         
         do {
             var s = dirent()
             withUnsafeMutablePointer(to: &s.d_name) { ptr in
-                let ptr = unsafeBitCast(ptr, to: UnsafeMutablePointer<UInt8>.self)
+                let ptr = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
                 ptr[0] = 0xFF
                 ptr[1] = 0xFF
+                ptr[2] = 0
             }
-            s.d_namlen = 2
             XCTAssertEqual(s.name, nil)
         }
         
         do {
             var s = dirent()
-            let n = MemoryLayout.ofInstance(s.d_name).size
+            let n = MemoryLayout.ofInstance(s.d_name).size - 1
             withUnsafeMutablePointer(to: &s.d_name) { ptr in
-                let ptr = unsafeBitCast(ptr, to: UnsafeMutablePointer<UInt8>.self)
+                let ptr = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
                 for i in 0 ..< n {
                     ptr[i] = UInt8(ascii: "A")
                 }
+                ptr[n] = 0
             }
-            s.d_namlen = UInt16(n)
             XCTAssertEqual(s.name, String(repeating: "A", count: n))
         }
     }
     
-    static var allTests: [(String, (ReaddirTests) -> () throws -> Void)] = [
+    static var allTests = [
         ("testName", testName),
     ]
 }

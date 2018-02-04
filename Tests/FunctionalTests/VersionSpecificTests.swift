@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -28,13 +28,13 @@ class VersionSpecificTests: XCTestCase {
             initGitRepo(depPath)
             let repo = GitRepository(path: depPath)
 
-            // Create the initial version (works, but empty).
+            // Create the initial commit.
             try fs.writeFileContents(depPath.appending(component: "Package.swift")) {
                 $0 <<< "import PackageDescription\n"
                 $0 <<< "let package = Package(name: \"Dep\")\n"
             }
             try repo.stage(file: "Package.swift")
-            try repo.commit(message: "Initial v1.0.0")
+            try repo.commit(message: "Initial")
             try repo.tag(name: "1.0.0")
 
             // Create the version to test against.
@@ -74,7 +74,7 @@ class VersionSpecificTests: XCTestCase {
             try repo.tag(name: "1.1.0@swift-\(Versioning.currentVersion.major)")
 
             // The build should work now.
-            _ = try SwiftPMProduct.SwiftBuild.execute(["--clean=dist"], chdir: primaryPath)
+            _ = try SwiftPMProduct.SwiftPackage.execute(["reset"], packagePath: primaryPath)
             XCTAssertBuilds(primaryPath)
         }
     }

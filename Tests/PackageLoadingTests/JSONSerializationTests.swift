@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -16,9 +16,9 @@ import XCTest
 @testable import PackageLoading
 
 class JSONSerializationTests: XCTestCase {
-    func assertEqual(package: Package, expected: String) {
+    func assertEqual(package: Package, expected: String, file: StaticString = #file, line: UInt = #line) {
         let json = package.toJSON().toString()
-        XCTAssertEqual(json, expected)
+        XCTAssertEqual(json, expected, file: file, line: line)
     }
 
     func testSimple() {
@@ -56,7 +56,7 @@ class JSONSerializationTests: XCTestCase {
         let package = Package(name: "Targets", targets: [t1, t2])
         assertEqual(package: package, expected: "{\"dependencies\": [], \"exclude\": [], \"name\": \"Targets\", \"targets\": [{\"dependencies\": [], \"name\": \"One\"}, {\"dependencies\": [\"One\"], \"name\": \"Two\"}]}")
     }
-
+    
     static var allTests = [
         ("testSimple", testSimple),
         ("testDependencies", testDependencies),

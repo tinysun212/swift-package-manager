@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -33,7 +33,7 @@ public struct SwiftVersion {
     public var minor: Int { return version.minor }
     /// The patch component of the version number.
     public var patch: Int { return version.patch }
-    
+
     /// The version as a readable string.
     public var displayString: String {
         var result = "\(major).\(minor).\(patch)"
@@ -62,7 +62,7 @@ public struct SwiftVersion {
         return [
             "@swift-\(major).\(minor).\(patch)",
             "@swift-\(major).\(minor)",
-            "@swift-\(major)"
+            "@swift-\(major)",
         ]
     }
 
@@ -78,9 +78,10 @@ private func getBuildIdentifier() -> String? {
 
 /// Version support for the package manager.
 public struct Versioning {
+
     /// The current version of the package manager.
     public static let currentVersion = SwiftVersion(
-        version: (3, 0, 0),
+        version: (4, 0, 0),
         isDevelopment: true,
         buildIdentifier: getBuildIdentifier())
 

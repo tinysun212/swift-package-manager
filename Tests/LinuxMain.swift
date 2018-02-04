@@ -14,7 +14,6 @@ import BasicTests
 import BuildTests
 import CommandsTests
 import FunctionalTests
-import GetTests
 import POSIXTests
 import PackageDescriptionTests
 import PackageGraphTests
@@ -22,6 +21,7 @@ import PackageLoadingTests
 import PackageModelTests
 import SourceControlTests
 import UtilityTests
+import WorkspaceTests 
 import XcodeprojTests
 
 var tests = [XCTestCaseEntry]()
@@ -29,7 +29,6 @@ tests += BasicTests.allTests()
 tests += BuildTests.allTests()
 tests += CommandsTests.allTests()
 tests += FunctionalTests.allTests()
-tests += GetTests.allTests()
 tests += POSIXTests.allTests()
 tests += PackageDescriptionTests.allTests()
 tests += PackageGraphTests.allTests()
@@ -37,5 +36,6 @@ tests += PackageLoadingTests.allTests()
 tests += PackageModelTests.allTests()
 tests += SourceControlTests.allTests()
 tests += UtilityTests.allTests()
+tests += WorkspaceTests.allTests()
 tests += XcodeprojTests.allTests()
 XCTMain(tests)

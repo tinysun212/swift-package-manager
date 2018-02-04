@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -34,12 +34,28 @@ extension InMemoryFileSystem {
 
     /// Create a new file system with an empty file at each provided path.
     public convenience init(emptyFiles files: String...) {
+        self.init(emptyFiles: files)
+    }
+
+    /// Create a new file system with an empty file at each provided path.
+    public convenience init(emptyFiles files: [String]) {
         self.init()
 
         for path in files {
             let path = AbsolutePath(path)
             try! createDirectory(path.parentDirectory, recursive: true)
             try! writeFileContents(path, bytes: "")
+        }
+    }
+}
+
+extension FileSystem {
+    /// Print the contents of the directory. Only for debugging purposes.
+    public func dump(directory path: AbsolutePath) {
+        do {
+        print(try getDirectoryContents(path))
+        } catch {
+            print(String(describing: error))
         }
     }
 }

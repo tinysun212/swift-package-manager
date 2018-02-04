@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -10,10 +10,9 @@
 
 import Basic
 import PackageLoading
+import PackageModel
 import SourceControl
 import Utility
-
-import struct PackageDescription.Version
 
 /// Adaptor for exposing repositories as PackageContainerProvider instances.
 ///
@@ -24,47 +23,56 @@ public class RepositoryPackageContainerProvider: PackageContainerProvider {
 
     let repositoryManager: RepositoryManager
     let manifestLoader: ManifestLoaderProtocol
-    
+
+    /// The tools version currently in use. Only the container versions less than and equal to this will be provided by
+    /// the container.
+    let currentToolsVersion: ToolsVersion
+
+    /// The tools version loader.
+    let toolsVersionLoader: ToolsVersionLoaderProtocol
+
     /// Create a repository-based package provider.
     ///
     /// - Parameters:
     ///   - repositoryManager: The repository manager responsible for providing repositories.
     ///   - manifestLoader: The manifest loader instance.
-    public init(repositoryManager: RepositoryManager, manifestLoader: ManifestLoaderProtocol) {
+    ///   - currentToolsVersion: The current tools version in use.
+    ///   - toolsVersionLoader: The tools version loader.
+    public init(
+        repositoryManager: RepositoryManager,
+        manifestLoader: ManifestLoaderProtocol,
+        currentToolsVersion: ToolsVersion = ToolsVersion.currentToolsVersion,
+        toolsVersionLoader: ToolsVersionLoaderProtocol = ToolsVersionLoader()
+    ) {
         self.repositoryManager = repositoryManager
         self.manifestLoader = manifestLoader
+        self.currentToolsVersion = currentToolsVersion
+        self.toolsVersionLoader = toolsVersionLoader
     }
 
-    public func getContainer(for identifier: RepositorySpecifier) throws -> Container {
+    public func getContainer(
+        for identifier: Container.Identifier,
+        skipUpdate: Bool,
+        completion: @escaping (Result<Container, AnyError>) -> Void
+    ) {
         // Resolve the container using the repository manager.
-        //
-        // FIXME: We need to move this to an async interface, or document the interface as thread safe.
-        let handle = repositoryManager.lookup(repository: identifier)
-
-        // Wait for the repository to be fetched.
-        let wasAvailableCondition = Condition()
-        var wasAvailableOpt: Bool? = nil
-        handle.addObserver { handle in
-            wasAvailableCondition.whileLocked{
-                wasAvailableOpt = handle.isAvailable
-                wasAvailableCondition.signal()
+        repositoryManager.lookup(repository: identifier, skipUpdate: skipUpdate) { result in
+            // Create the container wrapper.
+            let container = result.mapAny { handle -> Container in
+                // Open the repository.
+                //
+                // FIXME: Do we care about holding this open for the lifetime of the container.
+                let repository = try handle.open()
+                return RepositoryPackageContainer(
+                    identifier: identifier,
+                    repository: repository,
+                    manifestLoader: self.manifestLoader,
+                    toolsVersionLoader: self.toolsVersionLoader,
+                    currentToolsVersion: self.currentToolsVersion
+                )
             }
+            completion(container)
         }
-        while wasAvailableCondition.whileLocked({ wasAvailableOpt == nil}) {
-            wasAvailableCondition.wait()
-        }
-        let wasAvailable = wasAvailableOpt!
-        if !wasAvailable {
-            throw RepositoryPackageResolutionError.unavailableRepository
-        }
-
-        // Open the repository.
-        //
-        // FIXME: Do we care about holding this open for the lifetime of the container.
-        let repository = try handle.open()
-
-        // Create the container wrapper.
-        return RepositoryPackageContainer(identifier: identifier, repository: repository, manifestLoader: manifestLoader)
     }
 }
 
@@ -82,35 +90,73 @@ public typealias RepositoryPackageConstraint = PackageContainerConstraint<Reposi
 public class RepositoryPackageContainer: PackageContainer, CustomStringConvertible {
     public typealias Identifier = RepositorySpecifier
 
+    // A wrapper for getDependencies() errors. This adds additional information
+    // about the container to identify it for diagnostics.
+    public struct GetDependenciesErrorWrapper: Swift.Error {
+
+        /// The container which had this error.
+        public let containerIdentifier: String
+
+        /// The source control reference i.e. version, branch, revsion etc.
+        public let reference: String
+
+        /// The actual error that occurred.
+        public let underlyingError: Swift.Error
+    }
+
     /// The identifier of the repository.
     public let identifier: RepositorySpecifier
 
-    /// The available version list (in order).
-    public let versions: [Version]
-
+    /// The available version list (in reverse order).
+    public func versions(filter isIncluded: (Version) -> Bool) -> AnySequence<Version> {
+        return AnySequence(reversedVersions.filter(isIncluded).lazy.filter({
+            guard let toolsVersion = try? self.toolsVersion(for: $0),
+                  self.currentToolsVersion >= toolsVersion else {
+                return false
+            }
+            return true
+        }))
+    }
     /// The opened repository.
     let repository: Repository
 
     /// The manifest loader.
     let manifestLoader: ManifestLoaderProtocol
 
+    /// The tools version loader.
+    let toolsVersionLoader: ToolsVersionLoaderProtocol
+
+    /// The current tools version in use.
+    let currentToolsVersion: ToolsVersion
+
     /// The versions in the repository and their corresponding tags.
     let knownVersions: [Version: String]
-    
+
+    /// The versions in the repository sorted by latest first.
+    let reversedVersions: [Version]
+
     /// The cached dependency information.
-    private var dependenciesCache: [Version: [RepositoryPackageConstraint]] = [:]
+    private var dependenciesCache: [String: [RepositoryPackageConstraint]] = [:]
     private var dependenciesCacheLock = Lock()
-    
-    init(identifier: RepositorySpecifier, repository: Repository, manifestLoader: ManifestLoaderProtocol) {
+
+    init(
+        identifier: RepositorySpecifier,
+        repository: Repository,
+        manifestLoader: ManifestLoaderProtocol,
+        toolsVersionLoader: ToolsVersionLoaderProtocol,
+        currentToolsVersion: ToolsVersion
+    ) {
         self.identifier = identifier
         self.repository = repository
         self.manifestLoader = manifestLoader
+        self.toolsVersionLoader = toolsVersionLoader
+        self.currentToolsVersion = currentToolsVersion
 
-        // Compute the map of known versions and sorted version set.
+        // Compute the map of known versions.
         //
         // FIXME: Move this utility to a more stable location.
         self.knownVersions = Git.convertTagsToVersionMap(repository.tags)
-        self.versions = [Version](knownVersions.keys).sorted()
+        self.reversedVersions = [Version](self.knownVersions.keys).sorted().reversed()
     }
 
     public var description: String {
@@ -121,28 +167,82 @@ public class RepositoryPackageContainer: PackageContainer, CustomStringConvertib
         return knownVersions[version]
     }
 
-    public func getRevision(for tag: String) throws -> Revision {
+    /// Returns revision for the given tag.
+    public func getRevision(forTag tag: String) throws -> Revision {
         return try repository.resolveRevision(tag: tag)
     }
 
+    /// Returns revision for the given identifier.
+    public func getRevision(forIdentifier identifier: String) throws -> Revision {
+        return try repository.resolveRevision(identifier: identifier)
+    }
+
+    /// Returns the tools version of the given version of the package.
+    private func toolsVersion(for version: Version) throws -> ToolsVersion {
+        let tag = knownVersions[version]!
+        let revision = try repository.resolveRevision(tag: tag)
+        let fs = try repository.openFileView(revision: revision)
+        return try toolsVersionLoader.load(at: .root, fileSystem: fs)
+    }
+
     public func getDependencies(at version: Version) throws -> [RepositoryPackageConstraint] {
-        // FIXME: Get a caching helper for this.
-        return try dependenciesCacheLock.withLock{
-            if let result = dependenciesCache[version] {
+        do {
+            return try cachedDependencies(forIdentifier: version.description) {
+                let tag = knownVersions[version]!
+                let revision = try repository.resolveRevision(tag: tag)
+                return try getDependencies(at: revision, version: version)
+            }
+        } catch {
+            throw GetDependenciesErrorWrapper(
+                containerIdentifier: identifier.url, reference: version.description, underlyingError: error)
+        }
+    }
+
+    public func getDependencies(at revision: String) throws -> [RepositoryPackageConstraint] {
+        do {
+            return try cachedDependencies(forIdentifier: revision) {
+                // resolve the revision identifier and return its dependencies.
+                let revision = try repository.resolveRevision(identifier: revision)
+                return try getDependencies(at: revision)
+            }
+        } catch {
+            throw GetDependenciesErrorWrapper(
+                containerIdentifier: identifier.url, reference: revision, underlyingError: error)
+        }
+    }
+
+    private func cachedDependencies(
+        forIdentifier identifier: String,
+        getDependencies: () throws -> [RepositoryPackageConstraint]
+    ) throws -> [RepositoryPackageConstraint] {
+        return try dependenciesCacheLock.withLock {
+            if let result = dependenciesCache[identifier] {
                 return result
             }
-
-            // FIXME: We should have a persistent cache for these.
-            let tag = knownVersions[version]!
-            let revision = try repository.resolveRevision(tag: tag)
-            let fs = try repository.openFileView(revision: revision)
-            let manifest = try manifestLoader.load(packagePath: AbsolutePath.root, baseURL: identifier.url, version: version, fileSystem: fs)
-            let result = manifest.package.dependencies.map{
-                RepositoryPackageConstraint(container: RepositorySpecifier(url: $0.url), versionRequirement: .range($0.versionRange))
-            }
-            dependenciesCache[version] = result
-
+            let result = try getDependencies()
+            dependenciesCache[identifier] = result
             return result
         }
+    }
+
+    /// Returns dependencies of a container at the given revision.
+    private func getDependencies(
+        at revision: Revision,
+        version: Version? = nil
+    ) throws -> [RepositoryPackageConstraint] {
+        let fs = try repository.openFileView(revision: revision)
+
+        // Load the tools version.
+        let toolsVersion = try toolsVersionLoader.load(at: .root, fileSystem: fs)
+
+        // Load the manifest.
+        let manifest = try manifestLoader.load(
+            package: AbsolutePath.root,
+            baseURL: identifier.url,
+            version: version,
+            manifestVersion: toolsVersion.manifestVersion,
+            fileSystem: fs)
+
+        return manifest.package.dependencyConstraints()
     }
 }

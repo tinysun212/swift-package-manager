@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
  
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
  
  See http://swift.org/LICENSE.txt for license information
@@ -12,14 +12,6 @@
 import XCTest
 
 class CollectionTests: XCTestCase {
-    func testPick() {
-        let body = { (num: Int) -> Bool in num > 5 }
-        
-        XCTAssertNil([].pick(body))
-        XCTAssertNil([3, 4].pick(body))
-        XCTAssertEqual([3, 7].pick(body), 7)
-        XCTAssertEqual([3, 8, 7].pick(body), 8)
-    }
     
     func testSplitAround() {
         
@@ -35,9 +27,39 @@ class CollectionTests: XCTestCase {
         eq(["f", "o", "o", ":", "b", "a", "r"].split(around: [":"]), (["f", "o", "o"], ["b", "a", "r"]))
     }
 
+    func testSplitisMatching() {
+        do {
+            let array = [false, true, true, false, false]
+            let result = array.split({ $0 == true })
+            XCTAssertEqual(result.0, [true, true])
+            XCTAssertEqual(result.1, [false, false, false])
+        }
+
+        do {
+            let array = [0, 1, 1, 2, 0, 0, 0]
+            let result = array.split({ $0 == 0 })
+            XCTAssertEqual(result.0, [0, 0, 0, 0])
+            XCTAssertEqual(result.1, [1, 1, 2])
+        }
+
+        do {
+            let array = [1, 1, 2]
+            let result = array.split({ $0 == 0 })
+            XCTAssertEqual(result.0, [])
+            XCTAssertEqual(result.1, [1, 1, 2])
+        }
+
+        do {
+            let array = [Int]()
+            let result = array.split({ $0 == 0 })
+            XCTAssertEqual(result.0, [])
+            XCTAssertEqual(result.1, [])
+        }
+    }
+
     static var allTests = [
-        ("testPick", testPick),
         ("testSplitAround", testSplitAround),
+        ("testSplitisMatching", testSplitisMatching),
     ]
 }
 

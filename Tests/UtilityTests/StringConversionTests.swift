@@ -13,6 +13,13 @@ import Utility
 
 class StringConversionTests: XCTestCase {
 
+    func testManglingToBundleIdentifier() {
+        XCTAssertEqual("foo".mangledToBundleIdentifier(), "foo")
+        XCTAssertEqual("1foo__ò".mangledToBundleIdentifier(), "1foo---")
+        XCTAssertEqual("com.example.🐴🔄".mangledToBundleIdentifier(), "com.example.----")
+        XCTAssertEqual("٠٠٠".mangledToBundleIdentifier(), "---")
+    }
+
     func testManglingToC99ExtendedIdentifier() {
         
         // Simple cases.
@@ -30,6 +37,8 @@ class StringConversionTests: XCTestCase {
         // Invalid leading characters.
         XCTAssertEqual("1".mangledToC99ExtendedIdentifier(), "_")
         XCTAssertEqual("1foo".mangledToC99ExtendedIdentifier(), "_foo")
+        XCTAssertEqual("٠٠٠".mangledToC99ExtendedIdentifier(), "_٠٠")
+        XCTAssertEqual("12 3".mangledToC99ExtendedIdentifier(), "_2_3")
         
         // FIXME: There are lots more interesting test cases to add here.
         var str1 = ""
@@ -46,6 +55,7 @@ class StringConversionTests: XCTestCase {
 }
 
     static var allTests = [
+        ("testManglingToBundleIdentifier", testManglingToBundleIdentifier),
         ("testManglingToC99ExtendedIdentifier", testManglingToC99ExtendedIdentifier),
     ]
 }

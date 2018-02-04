@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
  
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
  
  See http://swift.org/LICENSE.txt for license information
@@ -12,6 +12,30 @@
 /// of them are programming-related.
 extension String {
 
+    /// Returns a form of the string that is a valid bundle identifier
+    public func mangledToBundleIdentifier() -> String {
+        let mangledUnichars: [UInt16] = self.utf16.map({
+            switch $0 {
+            case
+            // A-Z
+            0x0041...0x005A,
+            // a-z
+            0x0061...0x007A,
+            // 0-9
+            0x0030...0x0039,
+            // -
+            0x2D,
+            // .
+            0x2E:
+                return $0
+            default:
+                return 0x2D
+            }
+        })
+
+        return String(utf16CodeUnits: mangledUnichars, count: mangledUnichars.count)
+    }
+
     /// Returns a form of the string that is valid C99 Extended Identifier (by
     /// replacing any invalid characters in an unspecified but consistent way).
     /// The output string is guaranteed to be non-empty as long as the input
@@ -19,7 +43,7 @@ extension String {
     public func mangledToC99ExtendedIdentifier() -> String {
         // Map invalid C99-invalid Unicode scalars to a replacement character.
         let replacementUnichar: UnicodeScalar = "_"
-        var mangledUnichars: [UnicodeScalar] = self.unicodeScalars.map {
+        var mangledUnichars: [UnicodeScalar] = self.unicodeScalars.map({
             switch $0.value {
               case
                 // A-Z
@@ -196,8 +220,8 @@ extension String {
               default:
                 return replacementUnichar
             }
-        }
-        
+        })
+
         // Apply further restrictions to the prefix.
         loop: for (idx, c) in mangledUnichars.enumerated() {
             switch c.value {
@@ -211,6 +235,7 @@ extension String {
                 0x0CE6...0x0CEF, 0x0D66...0x0D6F, 0x0E50...0x0E59,
                 0x0ED0...0x0ED9, 0x0F20...0x0F33:
                 mangledUnichars[idx] = replacementUnichar
+                break loop
               default:
                 break loop
             }
@@ -220,7 +245,7 @@ extension String {
         // FIXME: We should only construct a new string if anything changed.
         // FIXME: There doesn't seem to be a way to create a string from an
         //        array of Unicode scalars; but there must be a better way.
-        return mangledUnichars.reduce(""){ $0 + String($1) }
+        return mangledUnichars.reduce("") { $0 + String($1) }
     }
 
     /// Mangles the contents to a valid C99 Extended Identifier.  This method

@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -55,7 +55,7 @@
 */
 
 public struct Xcode {
-    
+
     /// An Xcode project, consisting of a tree of groups and file references,
     /// a list of targets, and some additional information.  Note that schemes
     /// are outside of the project data model.
@@ -72,16 +72,16 @@ public struct Xcode {
             self.projectDir = ""
             self.targets = []
         }
-        
+
         /// Creates and adds a new target (which does not initially have any
         /// build phases).
-        public func addTarget(productType: Target.ProductType, name: String) -> Target {
-            let target = Target(productType: productType, name: name)
+        public func addTarget(objectID: String? = nil, productType: Target.ProductType?, name: String) -> Target {
+            let target = Target(objectID: objectID, productType: productType, name: name)
             targets.append(target)
             return target
         }
     }
-    
+
     /// Abstract base class for all items in the group hierarhcy.
     public class Reference {
         /// Relative path of the reference.  It is usually a literal, but may
@@ -91,8 +91,8 @@ public struct Xcode {
         var pathBase: RefPathBase
         /// Name of the reference, if different from the last path component
         /// (if not set, Xcode will use the last path component as the name).
-        var name: String? = nil
-        
+        var name: String?
+
         /// Determines the base path for a reference's relative path (this is
         /// what for some reason is called a "source tree" in Xcode).
         public enum RefPathBase: String {
@@ -109,51 +109,64 @@ public struct Xcode {
             /// The string form, suitable for use in an Xcode project file.
             var asString: String { return rawValue }
         }
-        
+
         init(path: String, pathBase: RefPathBase = .groupDir, name: String? = nil) {
             self.path = path
             self.pathBase = pathBase
             self.name = name
         }
     }
-    
+
     /// A reference to a file system entity (a file, folder, etc).
     public class FileReference: Reference {
+        var objectID: String?
         var fileType: String?
-        
-        init(path: String, pathBase: RefPathBase = .groupDir, name: String? = nil, fileType: String? = nil) {
+
+        init(path: String, pathBase: RefPathBase = .groupDir, name: String? = nil, fileType: String? = nil, objectID: String? = nil) {
             super.init(path: path, pathBase: pathBase, name: name)
+            self.objectID = objectID
             self.fileType = fileType
         }
     }
-    
+
     /// A group that can contain References (FileReferences and other Groups).
     /// The resolved path of a group is used as the base path for any child
     /// references whose source tree type is GroupRelative.
     public class Group: Reference {
         var subitems = [Reference]()
-        
+
         /// Creates and appends a new Group to the list of subitems.
         /// The new group is returned so that it can be configured.
-        @discardableResult public func addGroup(path: String, pathBase: RefPathBase = .groupDir, name: String? = nil) -> Group {
+        @discardableResult public func addGroup(
+            path: String,
+            pathBase: RefPathBase = .groupDir,
+            name: String? = nil
+        ) -> Group {
             let group = Group(path: path, pathBase: pathBase, name: name)
             subitems.append(group)
             return group
         }
-        
+
         /// Creates and appends a new FileReference to the list of subitems.
-        @discardableResult public func addFileReference(path: String, pathBase: RefPathBase = .groupDir, name: String? = nil, fileType: String? = nil) -> FileReference {
-            let fref = FileReference(path: path, pathBase: pathBase, name: name, fileType: fileType)
+        @discardableResult public func addFileReference(
+            path: String,
+            pathBase: RefPathBase = .groupDir,
+            name: String? = nil,
+            fileType: String? = nil,
+            objectID: String? = nil
+        ) -> FileReference {
+            let fref = FileReference(path: path, pathBase: pathBase, name: name, fileType: fileType, objectID: objectID)
             subitems.append(fref)
             return fref
         }
     }
-    
+
     /// An Xcode target, representing a single entity to build.
     public class Target {
+        var objectID: String?
         var name: String
         var productName: String
-        var productType: ProductType
+        var productType: ProductType?
         var buildSettings: BuildSettingsTable
         var buildPhases: [BuildPhase]
         var productReference: FileReference?
@@ -167,7 +180,8 @@ public struct Xcode {
             case unitTest = "com.apple.product-type.bundle.unit-test"
             var asString: String { return rawValue }
         }
-        init(productType: ProductType, name: String) {
+        init(objectID: String?, productType: ProductType?, name: String) {
+            self.objectID = objectID
             self.name = name
             self.productType = productType
             self.productName = name
@@ -175,11 +189,11 @@ public struct Xcode {
             self.buildPhases = []
             self.dependencies = []
         }
-        
+
         // FIXME: There's a lot repetition in these methods; using generics to
         // try to avoid that raised other issues in terms of requirements on
         // the Reference class, though.
-        
+
         /// Adds a "headers" build phase, i.e. one that copies headers into a
         /// directory of the product, after suitable processing.
         @discardableResult public func addHeadersBuildPhase() -> HeadersBuildPhase {
@@ -187,7 +201,7 @@ public struct Xcode {
             buildPhases.append(phase)
             return phase
         }
-        
+
         /// Adds a "sources" build phase, i.e. one that compiles sources and
         /// provides them to be linked into the executable code of the product.
         @discardableResult public func addSourcesBuildPhase() -> SourcesBuildPhase {
@@ -195,7 +209,7 @@ public struct Xcode {
             buildPhases.append(phase)
             return phase
         }
-        
+
         /// Adds a "frameworks" build phase, i.e. one that links compiled code
         /// and libraries into the executable of the product.
         @discardableResult public func addFrameworksBuildPhase() -> FrameworksBuildPhase {
@@ -203,7 +217,7 @@ public struct Xcode {
             buildPhases.append(phase)
             return phase
         }
-        
+
         /// Adds a "copy files" build phase, i.e. one that copies files to an
         /// arbitrary location relative to the product.
         @discardableResult public func addCopyFilesBuildPhase(dstDir: String) -> CopyFilesBuildPhase {
@@ -211,7 +225,7 @@ public struct Xcode {
             buildPhases.append(phase)
             return phase
         }
-        
+
         /// Adds a "shell script" build phase, i.e. one that runs a custom
         /// shell script as part of the build.
         @discardableResult public func addShellScriptBuildPhase(script: String) -> ShellScriptBuildPhase {
@@ -219,25 +233,25 @@ public struct Xcode {
             buildPhases.append(phase)
             return phase
         }
-        
+
         /// Adds a dependency on another target.
         /// FIXME: We do not check for cycles.  Should we?  This is an extremely
         /// minimal API so it's not clear that we should.
         public func addDependency(on target: Target) {
             dependencies.append(TargetDependency(target: target))
         }
-        
+
         /// A simple wrapper to prevent ownership cycles in the `dependencies`
         /// property.
         struct TargetDependency {
             unowned var target: Target
         }
     }
-    
+
     /// Abstract base class for all build phases in a target.
     public class BuildPhase {
         var files: [BuildFile] = []
-        
+
         /// Adds a new build file that refers to `fileRef`.
         @discardableResult public func addBuildFile(fileRef: FileReference) -> BuildFile {
             let buildFile = BuildFile(fileRef: fileRef)
@@ -245,25 +259,25 @@ public struct Xcode {
             return buildFile
         }
     }
-    
+
     /// A "headers" build phase, i.e. one that copies headers into a directory
     /// of the product, after suitable processing.
     public class HeadersBuildPhase: BuildPhase {
         // Nothing extra yet.
     }
-    
+
     /// A "sources" build phase, i.e. one that compiles sources and provides
     /// them to be linked into the executable code of the product.
     public class SourcesBuildPhase: BuildPhase {
         // Nothing extra yet.
     }
-    
+
     /// A "frameworks" build phase, i.e. one that links compiled code and
     /// libraries into the executable of the product.
     public class FrameworksBuildPhase: BuildPhase {
         // Nothing extra yet.
     }
-    
+
     /// A "copy files" build phase, i.e. one that copies files to an arbitrary
     /// location relative to the product.
     public class CopyFilesBuildPhase: BuildPhase {
@@ -272,7 +286,7 @@ public struct Xcode {
             self.dstDir = dstDir
         }
     }
-    
+
     /// A "shell script" build phase, i.e. one that runs a custom shell script.
     public class ShellScriptBuildPhase: BuildPhase {
         var script: String
@@ -280,7 +294,7 @@ public struct Xcode {
             self.script = script
         }
     }
-    
+
     /// A build file, representing the membership of a file reference in a
     /// build phase of a target.
     public class BuildFile {
@@ -289,7 +303,7 @@ public struct Xcode {
             self.fileRef = fileRef
         }
     }
-    
+
     /// A table of build settings, which for the sake of simplicity consists
     /// (in this simplified model) of a set of common settings, and a set of
     /// overlay settings for Debug and Release builds.  There can also be a
@@ -298,21 +312,21 @@ public struct Xcode {
         /// Common build settings are in both generated configurations (Debug
         /// and Release).
         var common = BuildSettings()
-        
+
         /// Debug build settings are overlaid over the common settings in the
         /// generated Debug configuration.
         /// FIXME: They are not currently, but should be, overlaid in a manner
         /// that preserves the semantics of `$(inherited)`.
         var debug = BuildSettings()
-        
+
         /// Release build settings are overlaid over the common settings in the
         /// generated Release configuration.
         /// FIXME: They are not currently, but should be, overlaid in a manner
         /// that preserves the semantics of `$(inherited)`.
         var release = BuildSettings()
-        
+
         /// An optional file reference to an .xcconfig file.
-        var xcconfigFileRef: FileReference? = nil
+        var xcconfigFileRef: FileReference?
 
         /// A set of build settings, which is represented as a struct of optional
         /// build settings.  This is not optimally efficient, but it is great for
@@ -321,6 +335,7 @@ public struct Xcode {
             // Note: although some of these build settings sound like booleans,
             // they are all either strings or arrays of strings, because even
             // a boolean may be a macro reference expression.
+            var CLANG_ENABLE_OBJC_ARC: String?
             var COMBINE_HIDPI_IMAGES: String?
             var COPY_PHASE_STRIP: String?
             var DEBUG_INFORMATION_FORMAT: String?
@@ -346,6 +361,7 @@ public struct Xcode {
             var PRODUCT_NAME: String?
             var PROJECT_NAME: String?
             var SDKROOT: String?
+            var SKIP_INSTALL: String?
             var SUPPORTED_PLATFORMS: [String]?
             var SWIFT_ACTIVE_COMPILATION_CONDITIONS: String?
             var SWIFT_FORCE_STATIC_LINK_STDLIB: String?
@@ -368,8 +384,7 @@ public struct Xcode {
 public func += (lhs: inout [String]?, rhs: [String]) {
     if lhs == nil {
         lhs = rhs
-    }
-    else {
+    } else {
         lhs = lhs! + rhs
     }
 }

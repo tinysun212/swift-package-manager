@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -10,83 +10,86 @@
 
 import Basic
 
-@_exported import enum PackageDescription.ProductType
+/// The type of product.
+public enum ProductType {
+
+    /// The type of library.
+    public enum LibraryType {
+
+        /// Static library.
+        case `static`
+
+        /// Dynamic library.
+        case `dynamic`
+
+        /// The type of library is unspecified and should be decided by package manager.
+        case automatic
+    }
+
+    /// A library product.
+    case library(LibraryType)
+
+    /// An executable product.
+    case executable
+
+    /// A test product.
+    case test
+}
 
 public class Product {
+
     /// The name of the product.
     public let name: String
 
     /// The type of product to create.
     public let type: ProductType
-    
-    /// The list of modules to combine to form the product.
-    ///
-    /// This is never empty, and is only the modules which are required to be in
-    /// the product, but not necessarily their transitive dependencies.
-    public let modules: [Module]
 
-    public init(name: String, type: ProductType, modules: [Module]) {
-        precondition(!modules.isEmpty)
+    /// The list of targets to combine to form the product.
+    ///
+    /// This is never empty, and is only the targets which are required to be in
+    /// the product, but not necessarily their transitive dependencies.
+    public let targets: [Target]
+
+    /// The path to linux main file.
+    public let linuxMain: AbsolutePath?
+
+    public init(name: String, type: ProductType, targets: [Target], linuxMain: AbsolutePath? = nil) {
+        precondition(!targets.isEmpty)
+        if type == .executable {
+            assert(targets.filter({ $0.type == .executable }).count == 1,
+                   "Executable products should have exactly one executable target.")
+        }
+        if linuxMain != nil {
+            assert(type == .test, "Linux main should only be set on test products")
+        }
         self.name = name
         self.type = type
-        self.modules = modules
+        self.targets = targets
+        self.linuxMain = linuxMain 
     }
-
-    public var outname: RelativePath {
-        switch type {
-        case .Executable:
-            return RelativePath(name)
-        case .Library(.Static):
-            return RelativePath("lib\(name).a")
-        case .Library(.Dynamic):
-            return RelativePath("lib\(name).\(Product.dynamicLibraryExtension)")
-        case .Test:
-            let base = "\(name).xctest"
-            #if os(macOS)
-                return RelativePath("\(base)/Contents/MacOS/\(name)")
-            #else
-                return RelativePath(base)
-            #endif
-        }
-    }
-
-    // FIXME: This needs to be come from a toolchain object, not the host
-    // configuration.
-#if os(macOS)
-    public static let dynamicLibraryExtension = "dylib"
-#elseif CYGWIN
-    public static let dynamicLibraryExtension = "dll"
-#else
-    public static let dynamicLibraryExtension = "so"
-#endif
 }
 
 extension Product: CustomStringConvertible {
     public var description: String {
-        let base = outname.basename
-        switch type {
-        case .Test:
-            return "\(base).xctest"
-        default:
-            return base
-        }
+        return "<Product: \(name)"
     }
 }
 
-extension ProductType: Equatable {}
-public func ==(lhs: ProductType, rhs: ProductType) -> Bool {
-    switch (lhs, rhs) {
-    case (.Executable, .Executable):
-        return true
-    case (.Executable, _):
-        return false
-    case (.Test, .Test):
-        return true
-    case (.Test, _):
-        return false
-    case (.Library(let lhsType), .Library(let rhsType)):
-        return lhsType == rhsType
-    case (.Library(_), _):
-        return false
+extension ProductType: Equatable {
+    public static func == (lhs: ProductType, rhs: ProductType) -> Bool {
+        switch (lhs, rhs) {
+        case (.executable, .executable):
+            return true
+        case (.executable, _):
+            return false
+        case (.test, .test):
+            return true
+        case (.test, _):
+            return false
+        case (.library(let lhsType), .library(let rhsType)):
+            return lhsType == rhsType
+        case (.library, _):
+            return false
+        }
     }
 }

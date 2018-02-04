@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -24,7 +24,6 @@ class ModuleMapGeneration: XCTestCase {
         let expected = BufferedOutputByteStream()
         expected <<< "module Foo {\n"
         expected <<< "    umbrella header \"/include/Foo.h\"\n"
-        expected <<< "    link \"Foo\"\n"
         expected <<< "    export *\n"
         expected <<< "}\n"
 
@@ -41,7 +40,6 @@ class ModuleMapGeneration: XCTestCase {
         let expected = BufferedOutputByteStream()
         expected <<< "module Foo {\n"
         expected <<< "    umbrella header \"/include/Foo/Foo.h\"\n"
-        expected <<< "    link \"Foo\"\n"
         expected <<< "    export *\n"
         expected <<< "}\n"
 
@@ -55,7 +53,6 @@ class ModuleMapGeneration: XCTestCase {
         let expected = BufferedOutputByteStream()
         expected <<< "module Foo {\n"
         expected <<< "    umbrella \"/include\"\n"
-        expected <<< "    link \"Foo\"\n"
         expected <<< "    export *\n"
         expected <<< "}\n"
 
@@ -90,7 +87,7 @@ class ModuleMapGeneration: XCTestCase {
             "/Foo.c")
         ModuleMapTester("Foo", in: fs) { result in
             result.checkNotCreated()
-            result.checkDiagnostics("warning: No include directory found for module \'Foo\'. A library can not be imported without any public headers.")
+            result.checkDiagnostics("warning: No include directory found for target \'Foo\'. A library can not be imported without any public headers.")
         }
 
         fs = InMemoryFileSystem(emptyFiles:
@@ -99,7 +96,6 @@ class ModuleMapGeneration: XCTestCase {
         let expected = BufferedOutputByteStream()
         expected <<< "module F_o_o {\n"
         expected <<< "    umbrella \"/include\"\n"
-        expected <<< "    link \"F_o_o\"\n"
         expected <<< "    export *\n"
         expected <<< "}\n"
         ModuleMapTester("F-o-o", in: fs) { result in
@@ -120,12 +116,12 @@ class ModuleMapGeneration: XCTestCase {
         fs = InMemoryFileSystem(emptyFiles:
             "/include/Foo/Foo.h",
             "/include/Bar/Foo.h")
-        checkExpected("could not generate module map for module 'Foo', the file layout is not supported: an umbrella header is defined at /include/Foo/Foo.h, but more than 1 directories exist: /include/Bar, /include/Foo fix: reduce these directories to a single directory: /include/Bar, /include/Foo")
+        checkExpected("could not generate modulemap for target 'Foo', the file layout is not supported: an umbrella header is defined at /include/Foo/Foo.h, but more than 1 directories exist: /include/Bar, /include/Foo fix: reduce these directories to a single directory: /include/Bar, /include/Foo")
 
         fs = InMemoryFileSystem(emptyFiles:
             "/include/Foo.h",
             "/include/Bar/Foo.h")
-        checkExpected("could not generate module map for module 'Foo', the file layout is not supported: an umbrella header is defined at /include/Foo.h, but the following directories exist: /include/Bar fix: remove these directories: /include/Bar")
+        checkExpected("could not generate modulemap for target 'Foo', the file layout is not supported: an umbrella header is defined at /include/Foo.h, but the following directories exist: /include/Bar fix: remove these directories: /include/Bar")
     }
 
     static var allTests = [
@@ -137,10 +133,11 @@ class ModuleMapGeneration: XCTestCase {
     ]
 }
 
-func ModuleMapTester(_ name: String, in fileSystem: FileSystem, _ body: (ModuleMapResult) -> Void) {
-    let module = try! ClangModule(name: name, isTest: false, sources: Sources(paths: [], root: .root))
+func ModuleMapTester(_ name: String, includeDir: String = "include", in fileSystem: FileSystem, _ body: (ModuleMapResult) -> Void) {
+    let includeDir = AbsolutePath.root.appending(component: includeDir)
+    let target = ClangTarget(name: name, includeDir: includeDir, isTest: false, sources: Sources(paths: [], root: .root))
     let warningStream = BufferedOutputByteStream()
-    var generator = ModuleMapGenerator(for: module, fileSystem: fileSystem, warningStream: warningStream)
+    var generator = ModuleMapGenerator(for: target, fileSystem: fileSystem, warningStream: warningStream)
     var diagnostics = Set<String>()
     do {
         try generator.generateModuleMap(inDir: .root)

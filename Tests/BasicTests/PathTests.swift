@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -205,6 +205,15 @@ class PathTests: XCTestCase {
         XCTAssertEqual(AbsolutePath("/a").appending(component: "b").asString, "/a/b")
         XCTAssertEqual(AbsolutePath("/").appending(components: "a", "b").asString, "/a/b")
         XCTAssertEqual(AbsolutePath("/a").appending(components: "b", "c").asString, "/a/b/c")
+
+        XCTAssertEqual(AbsolutePath("/a/b/c").appending(components: "", "c").asString, "/a/b/c/c")
+        XCTAssertEqual(AbsolutePath("/a/b/c").appending(components: "").asString, "/a/b/c")
+        XCTAssertEqual(AbsolutePath("/a/b/c").appending(components: ".").asString, "/a/b/c")
+        XCTAssertEqual(AbsolutePath("/a/b/c").appending(components: "..").asString, "/a/b")
+        XCTAssertEqual(AbsolutePath("/a/b/c").appending(components: "..", "d").asString, "/a/b/d")
+        XCTAssertEqual(AbsolutePath("/").appending(components: "..").asString, "/")
+        XCTAssertEqual(AbsolutePath("/").appending(components: ".").asString, "/")
+        XCTAssertEqual(AbsolutePath("/").appending(components: "..", "a").asString, "/a")
     }
     
     func testPathComponents() {
@@ -253,6 +262,15 @@ class PathTests: XCTestCase {
         XCTAssertTrue(AbsolutePath("/2") >= AbsolutePath("/2"));
         XCTAssertTrue(AbsolutePath("/2.1") >= AbsolutePath("/2"));
     }
+
+    func testContains() {
+        XCTAssertTrue(AbsolutePath("/a/b/c/d/e/f").contains(AbsolutePath("/a/b/c/d")))
+        XCTAssertTrue(AbsolutePath("/a/b/c/d/e/f.swift").contains(AbsolutePath("/a/b/c")))
+        XCTAssertTrue(AbsolutePath("/").contains(AbsolutePath("/")))
+        XCTAssertTrue(AbsolutePath("/foo/bar").contains(AbsolutePath("/")))
+        XCTAssertFalse(AbsolutePath("/foo/bar").contains(AbsolutePath("/foo/bar/baz")))
+        XCTAssertFalse(AbsolutePath("/foo/bar").contains(AbsolutePath("/bar")))
+    }
     
     // FIXME: We also need tests for join() operations.
     
@@ -262,6 +280,7 @@ class PathTests: XCTestCase {
         
     static var allTests = [
         ("testBasics",                        testBasics),
+        ("testContains",                      testContains),
         ("testStringInitialization",          testStringInitialization),
         ("testStringLiteralInitialization",   testStringLiteralInitialization),
         ("testRepeatedPathSeparators",        testRepeatedPathSeparators),

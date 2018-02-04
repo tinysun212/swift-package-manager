@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -57,10 +57,16 @@ public final class ProgressBar: ProgressBarProtocol {
         self.isClear = true
     }
 
+    /// Creates repeating string for count times.
+    /// If count is negative, returns empty string.
+    private func repeating(string: String, count: Int) -> String {
+        return String(repeating: string, count: max(count, 0))
+    }
+
     public func update(percent: Int, text: String) {
         if isClear {
             let spaceCount = (term.width/2 - header.utf8.count/2)
-            term.write(" ".repeating(n: spaceCount))
+            term.write(repeating(string: " ", count: spaceCount))
             term.write(header, inColor: .cyan, bold: true)
             term.endLine()
             isClear = false
@@ -74,14 +80,14 @@ public final class ProgressBar: ProgressBarProtocol {
         let barWidth = term.width - prefix.utf8.count
         let n = Int(Double(barWidth) * Double(percent)/100.0)
 
-        term.write("=".repeating(n: n) + "-".repeating(n: barWidth - n), inColor: .green)
+        term.write(repeating(string: "=", count: n) + repeating(string: "-", count: barWidth - n), inColor: .green)
         term.write("]", inColor: .green, bold: true)
         term.endLine()
 
         term.clearLine()
         term.write(text)
 
-        term.moveCursor(y: 1)
+        term.moveCursor(up: 1)
     }
 
     public func complete() {
@@ -95,16 +101,4 @@ public func createProgressBar(forStream stream: OutputByteStream, header: String
         return ProgressBar(term: term, header: header)
     }
     return SimpleProgressBar(stream: stream, header: header)
-}
-
-private extension String {
-    /// Repeats self n times. If n is less than zero, returns the same string.
-    func repeating(n: Int) -> String {
-        guard n > 0 else { return self }
-        var str = ""
-        for _ in 0..<n {
-            str = str + self
-        }
-        return str
-    }
 }

@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -11,98 +11,114 @@
 import POSIX
 
 import Basic
+import Build
+import PackageLoading
 import protocol Build.Toolchain
+import Utility
 
 #if os(macOS)
     private let whichClangArgs = ["xcrun", "--find", "clang"]
-    private let whichDefaultSDKArgs = ["xcrun", "--sdk", "macosx", "--show-sdk-path"]
 #else
     private let whichClangArgs = ["which", "clang"]
 #endif
 
-struct UserToolchain: Toolchain {
-    /// Path of the `swiftc` compiler.
+/// Concrete object for manifest resource provider.
+private struct UserManifestResources: ManifestResourceProvider {
     let swiftCompiler: AbsolutePath
-    
+    let libDir: AbsolutePath
+    let sdkRoot: AbsolutePath?
+}
+
+public struct UserToolchain: Toolchain {
+
+    /// The manifest resource provider.
+    public let manifestResources: ManifestResourceProvider
+
+    /// Path of the `swiftc` compiler.
+    public let swiftCompiler: AbsolutePath
+
     /// Path of the `clang` compiler.
-    let clangCompiler: AbsolutePath
-    
-    /// Path of the default SDK (a.k.a. "sysroot"), if any.
-    let defaultSDK: AbsolutePath?
+    public let clangCompiler: AbsolutePath
 
-#if os(macOS)
-    var clangPlatformArgs: [String] {
-        return ["-arch", "x86_64", "-mmacosx-version-min=10.10", "-isysroot", defaultSDK!.asString]
-    }
-    var swiftPlatformArgs: [String] {
-        return ["-target", "x86_64-apple-macosx10.10", "-sdk", defaultSDK!.asString]
-    }
-#else
-    let clangPlatformArgs: [String] = []
-    let swiftPlatformArgs: [String] = []
-#endif
+    public let extraCCFlags: [String]
 
-    init() throws {
-        // Find the Swift compiler, looking first in the environment.
-        if let value = getenv("SWIFT_EXEC"), !value.isEmpty {
-            // We have a value, but it could be an absolute or a relative path.
-            swiftCompiler = AbsolutePath(value, relativeTo: currentWorkingDirectory)
+    public let extraSwiftCFlags: [String]
+
+    public var extraCPPFlags: [String] {
+        return destination.extraCPPFlags
+    }
+
+    public var dynamicLibraryExtension: String {
+        return destination.dynamicLibraryExtension
+    }
+
+    /// Path to llbuild.
+    let llbuild: AbsolutePath
+
+    /// The compilation destination object.
+    let destination: Destination
+
+    public init(destination: Destination) throws {
+        self.destination = destination
+
+        // Get the search paths from PATH.
+        let envSearchPaths = getEnvSearchPaths(
+            pathString: getenv("PATH"), currentWorkingDirectory: currentWorkingDirectory)
+
+        func lookup(fromEnv: String) -> AbsolutePath? {
+            return lookupExecutablePath(
+                filename: getenv(fromEnv),
+                searchPaths: envSearchPaths)
         }
-        else {
-            // No value in env, so look for `swiftc` alongside our own binary.
-            swiftCompiler = AbsolutePath(CommandLine.arguments[0], relativeTo: currentWorkingDirectory).parentDirectory.appending(component: "swiftc")
-        }
-        
+
+        // Get the binDir from destination.
+        let binDir = destination.binDir
+
+        // First look in env and then in bin dir.
+        swiftCompiler = lookup(fromEnv: "SWIFT_EXEC") ?? binDir.appending(component: "swiftc")
+
         // Check that it's valid in the file system.
-        // FIXME: We should also check that it resolves to an executable file
-        //        (it could be a symlink to such as file).
-        guard localFileSystem.exists(swiftCompiler) else {
+        guard localFileSystem.isExecutableFile(swiftCompiler) else {
             throw Error.invalidToolchain(problem: "could not find `swiftc` at expected path \(swiftCompiler.asString)")
         }
-        
-        // Find the Clang compiler, looking first in the environment.
-        if let value = getenv("CC"), !value.isEmpty {
-            // We have a value, but it could be an absolute or a relative path.
-            clangCompiler = AbsolutePath(value, relativeTo: currentWorkingDirectory)
+
+        // Look for llbuild in bin dir.
+        llbuild = binDir.appending(component: "swift-build-tool")
+        guard localFileSystem.exists(llbuild) else {
+            throw Error.invalidToolchain(problem: "could not find `llbuild` at expected path \(llbuild.asString)")
         }
-        else {
+
+        // Find the Clang compiler, looking first in the environment.
+        if let value = lookup(fromEnv: "CC") {
+            clangCompiler = value
+        } else {
             // No value in env, so search for `clang`.
-            guard let foundPath = try? POSIX.popen(whichClangArgs).chomp(), !foundPath.isEmpty else {
+            let foundPath = try Process.checkNonZeroExit(arguments: whichClangArgs).chomp()
+            guard !foundPath.isEmpty else {
                 throw Error.invalidToolchain(problem: "could not find `clang`")
             }
-            clangCompiler = AbsolutePath(foundPath, relativeTo: currentWorkingDirectory)
+            clangCompiler = AbsolutePath(foundPath)
         }
-        
+
         // Check that it's valid in the file system.
-        // FIXME: We should also check that it resolves to an executable file
-        //        (it could be a symlink to such as file).
-        guard localFileSystem.exists(clangCompiler) else {
+        guard localFileSystem.isExecutableFile(clangCompiler) else {
             throw Error.invalidToolchain(problem: "could not find `clang` at expected path \(clangCompiler.asString)")
         }
-        
-        // Find the default SDK (on macOS only).
-      #if os(macOS)
-        if let value = getenv("SYSROOT"), !value.isEmpty {
-            // We have a value, but it could be an absolute or a relative path.
-            defaultSDK = AbsolutePath(value, relativeTo: currentWorkingDirectory)
-        }
-        else {
-            // No value in env, so search for it.
-            guard let foundPath = try? POSIX.popen(whichDefaultSDKArgs).chomp(), !foundPath.isEmpty else {
-                throw Error.invalidToolchain(problem: "could not find default SDK")
-            }
-            defaultSDK = AbsolutePath(foundPath, relativeTo: currentWorkingDirectory)
-        }
-        
-        // If we have an SDK, we check that it's valid in the file system.
-        if let sdk = defaultSDK {
-            // FIXME: We should probably also check that it is a directory, etc.
-            guard localFileSystem.exists(sdk) else {
-                throw Error.invalidToolchain(problem: "could not find default SDK at expected path \(sdk.asString)")
-            }
-        }
-      #else
-        defaultSDK = nil
-      #endif
+
+        self.extraSwiftCFlags = [
+            "-target", destination.target,
+            "-sdk", destination.sdk.asString
+        ] + destination.extraSwiftCFlags
+
+        self.extraCCFlags = [
+            "-target", destination.target,
+            "--sysroot", destination.sdk.asString
+        ] + destination.extraCCFlags
+
+        manifestResources = UserManifestResources(
+            swiftCompiler: swiftCompiler,
+            libDir: binDir.parentDirectory.appending(components: "lib", "swift", "pm"),
+            sdkRoot: self.destination.sdk
+        )
     }
 }

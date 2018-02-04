@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -12,6 +12,7 @@ public enum SystemError: Swift.Error {
     case chdir(Int32, String)
     case close(Int32)
     case dirfd(Int32, String)
+    case exec(Int32, path: String, args: [String])
     case fgetc(Int32)
     case fread(Int32)
     case getcwd(Int32)
@@ -25,17 +26,19 @@ public enum SystemError: Swift.Error {
     case realpath(Int32, String)
     case rename(Int32, old: String, new: String)
     case rmdir(Int32, String)
+    case setenv(Int32, String)
     case stat(Int32, String)
     case symlink(Int32, String, dest: String)
     case symlinkat(Int32, String)
     case unlink(Int32, String)
+    case unsetenv(Int32, String)
     case waitpid(Int32)
+    case usleep(Int32)
 }
 
 import func libc.strerror_r
 import var libc.EINVAL
 import var libc.ERANGE
-
 
 extension SystemError: CustomStringConvertible {
     public var description: String {
@@ -58,7 +61,7 @@ extension SystemError: CustomStringConvertible {
             }
             fatalError("strerror_r error: \(ERANGE)")
         }
-        
+
         switch self {
         case .chdir(let errno, let path):
             return "chdir error: \(strerror(errno)): \(path)"
@@ -66,6 +69,9 @@ extension SystemError: CustomStringConvertible {
             return "close error: \(strerror(errno))"
         case .dirfd(let errno, _):
             return "dirfd error: \(strerror(errno))"
+        case .exec(let errno, let path, let args):
+            let joinedArgs = args.joined(separator: " ")
+            return "exec error: \(strerror(errno)): \(path) \(joinedArgs)"
         case .fgetc(let errno):
             return "fgetc error: \(strerror(errno))"
         case .fread(let errno):
@@ -92,6 +98,8 @@ extension SystemError: CustomStringConvertible {
             return "rename error: \(strerror(errno)): \(old) -> \(new)"
         case .rmdir(let errno, let path):
             return "rmdir error: \(strerror(errno)): \(path)"
+        case .setenv(let errno, let key):
+            return "setenv error: \(strerror(errno)): \(key)"
         case .stat(let errno, _):
             return "stat error: \(strerror(errno))"
         case .symlink(let errno, let path, let dest):
@@ -100,31 +108,12 @@ extension SystemError: CustomStringConvertible {
             return "symlinkat error: \(strerror(errno))"
         case .unlink(let errno, let path):
             return "unlink error: \(strerror(errno)): \(path)"
+        case .unsetenv(let errno, let key):
+            return "unsetenv error: \(strerror(errno)): \(key)"
         case .waitpid(let errno):
             return "waitpid error: \(strerror(errno))"
-        }
-    }
-}
-
-
-public enum Error: Swift.Error {
-    case exitStatus(Int32, [String])
-    case exitSignal
-}
-
-public enum ShellError: Swift.Error {
-    case system(arguments: [String], SystemError)
-    case popen(arguments: [String], SystemError)
-}
-
-extension Error: CustomStringConvertible {
-    public var description: String {
-        switch self {
-        case .exitStatus(let code, let args):
-            return "exit(\(code)): \(prettyArguments(args))"
-
-        case .exitSignal:
-            return "Child process exited with signal"
+        case .usleep(let errno):
+            return "usleep error: \(strerror(errno))"
         }
     }
 }

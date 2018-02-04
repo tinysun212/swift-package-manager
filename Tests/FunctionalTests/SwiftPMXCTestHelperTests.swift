@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -15,8 +15,7 @@ import Utility
 
 class SwiftPMXCTestHelperTests: XCTestCase {
     func testBasicXCTestHelper() {
-#if os(macOS)
-
+      #if os(macOS)
         fixture(name: "Miscellaneous/SwiftPMXCTestHelper") { prefix in
             // Build the package.
             XCTAssertBuilds(prefix)
@@ -39,7 +38,7 @@ class SwiftPMXCTestHelperTests: XCTestCase {
             // Run the XCTest helper tool and check result.
             XCTAssertXCTestHelper(prefix.appending(components: ".build", "debug", "SwiftPMXCTestHelperPackageTests.xctest"), testCases: testCases)
         }
-#endif
+      #endif
     }
     
     static var allTests = [
@@ -51,7 +50,7 @@ class SwiftPMXCTestHelperTests: XCTestCase {
 #if os(macOS)
 func XCTAssertXCTestHelper(_ bundlePath: AbsolutePath, testCases: NSDictionary) {
     do {
-        let env = ["DYLD_FRAMEWORK_PATH": try platformFrameworksPath().asString]
+        let env = ["DYLD_FRAMEWORK_PATH": Resources.default.sdkPlatformFrameworksPath.asString]
         let outputFile = bundlePath.parentDirectory.appending(component: "tests.txt")
         let _ = try SwiftPMProduct.XCTestHelper.execute([bundlePath.asString, outputFile.asString], env: env, printIfError: true)
         guard let data = NSData(contentsOfFile: outputFile.asString) else {

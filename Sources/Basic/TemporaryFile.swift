@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -39,7 +39,7 @@ private extension TempFileError {
 ///     - dir: If present this will be the temporary directory.
 ///
 /// - Returns: Path to directory in which temporary file should be created.
-private func determineTempDirectory(_ dir: AbsolutePath? = nil) -> AbsolutePath {
+public func determineTempDirectory(_ dir: AbsolutePath? = nil) -> AbsolutePath {
     // FIXME: Add other platform specific locations.
     let tmpDir = dir ?? cachedTempDirectory
     // FIXME: This is a runtime condition, so it should throw and not crash.
@@ -65,7 +65,8 @@ public final class TemporaryFile {
     /// The directory in which the temporary file is created.
     public let dir: AbsolutePath
 
-    /// The full path of the temporary file. For safety file operations should be done via the fileHandle instead of using this path.
+    /// The full path of the temporary file. For safety file operations should be done via the fileHandle instead of
+    /// using this path.
     public let path: AbsolutePath
 
     /// The file descriptor of the temporary file. It is used to create NSFileHandle which is exposed to clients.
@@ -96,7 +97,7 @@ public final class TemporaryFile {
         // Convert path to a C style string terminating with null char to be an valid input
         // to mkstemps method. The XXXXXX in this string will be replaced by a random string
         // which will be the actual path to the temporary file.
-        var template = [UInt8](path.asString.utf8).map{ Int8($0) } + [Int8(0)]
+        var template = [UInt8](path.asString.utf8).map({ Int8($0) }) + [Int8(0)]
 
         fd = libc.mkstemps(&template, Int32(suffix.utf8.count))
         // If mkstemps failed then throw error.
@@ -165,20 +166,24 @@ public final class TemporaryDirectory {
     public let path: AbsolutePath
 
     /// If true, try to remove the whole directory tree before deallocating.
-    let removeTreeOnDeinit: Bool
+    let shouldRemoveTreeOnDeinit: Bool
 
     /// Creates a temporary directory which is automatically removed when the object of this class goes out of scope.
     ///
     /// - Parameters:
-    ///     - dir: If specified the temporary directory will be created in this directory otherwise environment variables
-    ///            TMPDIR, TEMP and TMP will be checked for a value (in that order). If none of the env variables are
-    ///            set, dir will be set to `/tmp/`.
+    ///     - dir: If specified the temporary directory will be created in this directory otherwise environment
+    ///            variables TMPDIR, TEMP and TMP will be checked for a value (in that order). If none of the env
+    ///            variables are set, dir will be set to `/tmp/`.
     ///     - prefix: The prefix to the temporary file name.
     ///     - removeTreeOnDeinit: If enabled try to delete the whole directory tree otherwise remove only if its empty.
     ///
     /// - Throws: MakeDirectoryError
-    public init(dir: AbsolutePath? = nil, prefix: String = "TemporaryDirectory", removeTreeOnDeinit: Bool = false) throws {
-        self.removeTreeOnDeinit = removeTreeOnDeinit
+    public init(
+        dir: AbsolutePath? = nil,
+        prefix: String = "TemporaryDirectory",
+        removeTreeOnDeinit: Bool = false
+    ) throws {
+        self.shouldRemoveTreeOnDeinit = removeTreeOnDeinit
         self.prefix = prefix
         // Construct path to the temporary directory.
         let path = determineTempDirectory(dir).appending(RelativePath(prefix + ".XXXXXX"))
@@ -186,7 +191,7 @@ public final class TemporaryDirectory {
         // Convert path to a C style string terminating with null char to be an valid input
         // to mkdtemp method. The XXXXXX in this string will be replaced by a random string
         // which will be the actual path to the temporary directory.
-        var template = [UInt8](path.asString.utf8).map{ Int8($0) } + [Int8(0)]
+        var template = [UInt8](path.asString.utf8).map({ Int8($0) }) + [Int8(0)]
 
         if libc.mkdtemp(&template) == nil {
             throw MakeDirectoryError(errno: errno)
@@ -197,8 +202,8 @@ public final class TemporaryDirectory {
 
     /// Remove the temporary file before deallocating.
     deinit {
-        if removeTreeOnDeinit {
-            let _ = try? FileManager.default.removeItem(atPath: path.asString)
+        if shouldRemoveTreeOnDeinit {
+            _ = try? FileManager.default.removeItem(atPath: path.asString)
         } else {
             rmdir(path.asString)
         }

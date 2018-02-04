@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -23,11 +23,11 @@ final public class Thread {
     private var finishedCondition: Condition
 
     /// A boolean variable to track if this thread has finished executing its task.
-    private var finished: Bool
+    private var isFinished: Bool
 
     /// Creates an instance of thread class with closure to be executed when start() is called.
     public init(task: @escaping () -> Void) {
-        finished = false
+        isFinished = false
         finishedCondition = Condition()
 
         // Wrap the task with condition notifying any other threads blocked due to this thread.
@@ -35,14 +35,15 @@ final public class Thread {
         // runs, skip the use of finishedCondition.
         let theTask = { [weak self] in
             if let strongSelf = self {
-                precondition(!strongSelf.finished)
+                precondition(!strongSelf.isFinished)
                 strongSelf.finishedCondition.whileLocked {
                     task()
-                    strongSelf.finished = true
+                    strongSelf.isFinished = true
                     strongSelf.finishedCondition.broadcast()
                 }
             } else {
-                // If the containing thread has been destroyed, we can ignore the finished condition and just run the task.
+                // If the containing thread has been destroyed, we can ignore the finished condition and just run the
+                // task.
                 task()
             }
         }
@@ -58,7 +59,7 @@ final public class Thread {
     /// Blocks the calling thread until this thread is finished execution.
     public func join() {
         finishedCondition.whileLocked {
-            while !finished {
+            while !isFinished {
                 finishedCondition.wait()
             }
         }

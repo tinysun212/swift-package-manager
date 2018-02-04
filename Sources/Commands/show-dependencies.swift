@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
  
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
  
  See http://swift.org/LICENSE.txt for license information
@@ -11,7 +11,7 @@
 import Basic
 import PackageModel
 
-func dumpDependenciesOf(rootPackage: Package, mode: ShowDependenciesMode) {
+func dumpDependenciesOf(rootPackage: ResolvedPackage, mode: ShowDependenciesMode) {
     let dumper: DependenciesDumper
     switch mode {
     case .text:
@@ -24,31 +24,29 @@ func dumpDependenciesOf(rootPackage: Package, mode: ShowDependenciesMode) {
     dumper.dump(dependenciesOf: rootPackage)
 }
 
-
 private protocol DependenciesDumper {
-    func dump(dependenciesOf: Package)
+    func dump(dependenciesOf: ResolvedPackage)
 }
 
-
 private final class PlainTextDumper: DependenciesDumper {
-    func dump(dependenciesOf rootpkg: Package) {
-        func recursiveWalk(packages: [Package], prefix: String = "") {
+    func dump(dependenciesOf rootpkg: ResolvedPackage) {
+        func recursiveWalk(packages: [ResolvedPackage], prefix: String = "") {
             var hanger = prefix + "├── "
 
             for (index, package) in packages.enumerated() {
                 if index == packages.count - 1 {
                     hanger = prefix + "└── "
-                }                
+                }
 
-                let pkgVersion = package.version?.description ?? "unspecified"
+                let pkgVersion = package.manifest.version?.description ?? "unspecified"
 
-
-                print("\(hanger)\(package.name)<\(package.url)@\(pkgVersion)>") 
+                print("\(hanger)\(package.name)<\(package.manifest.url)@\(pkgVersion)>")
 
                 if !package.dependencies.isEmpty {
                     let replacement = (index == packages.count - 1) ?  "    " : "│   "
                     var childPrefix = hanger
-                    childPrefix.replaceSubrange(childPrefix.index(childPrefix.endIndex, offsetBy: -4)..<childPrefix.endIndex, with: replacement)
+                    let startIndex = childPrefix.index(childPrefix.endIndex, offsetBy: -4)
+                    childPrefix.replaceSubrange(startIndex..<childPrefix.endIndex, with: replacement)
                     recursiveWalk(packages: package.dependencies, prefix: childPrefix)
                 }
             }
@@ -64,12 +62,12 @@ private final class PlainTextDumper: DependenciesDumper {
 }
 
 private final class DotDumper: DependenciesDumper {
-    func dump(dependenciesOf rootpkg: Package) {
-        func recursiveWalk(rootpkg: Package) {
+    func dump(dependenciesOf rootpkg: ResolvedPackage) {
+        func recursiveWalk(rootpkg: ResolvedPackage) {
             printNode(rootpkg)
             for dependency in rootpkg.dependencies {
                 printNode(dependency)
-                print("\"\(rootpkg.url)\" -> \"\(dependency.url)\"")
+                print("\"\(rootpkg.manifest.url)\" -> \"\(dependency.manifest.url)\"")
 
                 if !dependency.dependencies.isEmpty {
                     recursiveWalk(rootpkg: dependency)
@@ -77,9 +75,9 @@ private final class DotDumper: DependenciesDumper {
             }
         }
 
-        func printNode(_ package: Package) {
-            let pkgVersion = package.version?.description ?? "unspecified"
-            print("\"\(package.url)\"[label=\"\(package.name)\\n\(package.url)\\n\(pkgVersion)\"]")
+        func printNode(_ package: ResolvedPackage) {
+            let pkgVersion = package.manifest.version?.description ?? "unspecified"
+            print("\"\(package.manifest.url)\"[label=\"\(package.name)\\n\(package.manifest.url)\\n\(pkgVersion)\"]")
         }
 
         if !rootpkg.dependencies.isEmpty {
@@ -94,30 +92,25 @@ private final class DotDumper: DependenciesDumper {
 }
 
 private final class JSONDumper: DependenciesDumper {
-    func dump(dependenciesOf rootpkg: Package) {
-        func convert(_ package: Package) -> JSON {
+    func dump(dependenciesOf rootpkg: ResolvedPackage) {
+        func convert(_ package: ResolvedPackage) -> JSON {
             return .dictionary([
                     "name": .string(package.name),
-                    "url": .string(package.url),
-                    "version": .string(package.version?.description ?? "unspecified"),
+                    "url": .string(package.manifest.url),
+                    "version": .string(package.manifest.version?.description ?? "unspecified"),
                     "path": .string(package.path.asString),
-                    "dependencies": .array(package.dependencies.map(convert))
+                    "dependencies": .array(package.dependencies.map(convert)),
                 ])
         }
 
-        print(convert(rootpkg).toString())
+        print(convert(rootpkg).toString(prettyPrint: true))
     }
 }
 
 enum ShowDependenciesMode: CustomStringConvertible {
     case text, dot, json
-    
-    init(_ rawValue: String?) throws {
-        guard let rawValue = rawValue else {
-            self = .text
-            return
-        }
-        
+
+    init?(rawValue: String) {
         switch rawValue.lowercased() {
         case "text":
            self = .text
@@ -126,10 +119,10 @@ enum ShowDependenciesMode: CustomStringConvertible {
         case "json":
            self = .json
         default:
-            throw OptionParserError.invalidUsage("invalid show-dependencies mode: \(rawValue)")
+            return nil
         }
     }
-    
+
     var description: String {
         switch self {
         case .text: return "text"

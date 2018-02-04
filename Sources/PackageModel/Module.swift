@@ -1,144 +1,174 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
-
- -----------------------------------------------------------------------
-
- A Target is a collection of sources and configuration that can be built
- into a product.
- 
- TODO should be a protocol
 */
 
 import Basic
 
-@_exported import enum PackageDescription.SystemPackageProvider
+@_exported import enum PackageDescription4.SystemPackageProvider
 
-public protocol ModuleProtocol {
-    var name: String { get }
-    var c99name: String { get }
-    var dependencies: [Module] { get set }
-    var recursiveDependencies: [Module] { get }
-    var isTest: Bool { get }
-}
+public class Target: ObjectIdentifierProtocol {
+    /// The target kind.
+    public enum Kind: String {
+        case executable
+        case library
+        case systemModule = "system-target"
+        case test
+    }
 
-public enum ModuleType {
-    case executable, library, systemModule
-}
-
-public class Module: ModuleProtocol {
-    /// The name of the module.
+    /// The name of the target.
     ///
-    /// NOTE: This name is not the language-level module (i.e., the importable
+    /// NOTE: This name is not the language-level target (i.e., the importable
     /// name) name in many cases, instead use c99name if you need uniqueness.
     public let name: String
 
-    /// The dependencies of this module, once loaded.
-    public var dependencies: [Module]
+    /// The dependencies of this target.
+    public let dependencies: [Target]
 
-    /// The language-level module name.
-    public var c99name: String
+    /// The product dependencies of this target.
+    public let productDependencies: [(name: String, package: String?)]
 
-    /// Whether this is a test module.
-    //
-    // FIXME: This should probably be rolled into the type.
-    public let isTest: Bool
-    
-    /// Suffix that's expected for test modules.
+    /// The language-level target name.
+    public let c99name: String
+
+    /// Suffix that's expected for test targets.
     public static let testModuleNameSuffix = "Tests"
 
-    /// The "type" of module.
-    public let type: ModuleType
+    /// The kind of target.
+    public let type: Kind
 
-    /// The sources for the module.
+    /// The sources for the target.
     public let sources: Sources
 
-    public init(name: String, type: ModuleType, sources: Sources, isTest: Bool = false) throws {
+    fileprivate init(
+        name: String,
+        type: Kind,
+        sources: Sources,
+        dependencies: [Target],
+        productDependencies: [(name: String, package: String?)] = []
+    ) {
         self.name = name
         self.type = type
         self.sources = sources
-        self.dependencies = []
+        self.dependencies = dependencies
+        self.productDependencies = productDependencies
         self.c99name = self.name.mangledToC99ExtendedIdentifier()
-        self.isTest = isTest
-    }
-
-    /// The transitive closure of the module dependencies, in build order.
-    //
-    // FIXME: This should be cached, once we have an immutable model.
-    public var recursiveDependencies: [Module] {
-        return (try! topologicalSort(dependencies, successors: { $0.dependencies })).reversed()
-    }
-
-    /// The base prefix for the test module, used to associate with the target it tests.
-    public var basename: String {
-        guard isTest else {
-            fatalError("\(type(of: self)) should be a test module to access basename.")
-        }
-        precondition(name.hasSuffix(Module.testModuleNameSuffix))
-        return name[name.startIndex..<name.index(name.endIndex, offsetBy: -Module.testModuleNameSuffix.characters.count)]
     }
 }
 
-extension Module: Hashable, Equatable {
-    public var hashValue: Int { return c99name.hashValue }
-}
+public class SwiftTarget: Target {
 
-public func ==(lhs: Module, rhs: Module) -> Bool {
-    return lhs.c99name == rhs.c99name
-}
+    /// The file name of linux main file.
+    public static let linuxMainBasename = "LinuxMain.swift"
 
-public class SwiftModule: Module {
-    public init(name: String, isTest: Bool = false, sources: Sources) throws {
-        // Compute the module type.
-        let isLibrary = !sources.relativePaths.contains { path in
-            let file = path.basename.lowercased()
-            // Look for a main.xxx file avoiding cases like main.xxx.xxx
-            return file.hasPrefix("main.") && file.characters.filter({$0 == "."}).count == 1
-        }
-        let type: ModuleType = isLibrary ? .library : .executable
-        
-        try super.init(name: name, type: type, sources: sources, isTest: isTest)
+    /// Create an executable Swift target from linux main test manifest file.
+    init(linuxMain: AbsolutePath, name: String, dependencies: [Target]) {
+        // Look for the first swift test target and use the same swift version
+        // for linux main target. This will need to change if we move to a model
+        // where we allow per target swift language version build settings.
+        let swiftTestTarget = dependencies.first(where: {
+            guard case let target as SwiftTarget = $0 else { return false }
+            return target.type == .test
+        }).flatMap({ $0 as? SwiftTarget })
+
+        self.swiftVersion = swiftTestTarget?.swiftVersion ?? ToolsVersion.currentToolsVersion.major
+        let sources = Sources(paths: [linuxMain], root: linuxMain.parentDirectory)
+        super.init(name: name, type: .executable, sources: sources, dependencies: dependencies)
+    }
+
+    /// The swift version of this target.
+    public let swiftVersion: Int
+
+    public init(
+        name: String,
+        isTest: Bool = false,
+        sources: Sources,
+        dependencies: [Target] = [],
+        productDependencies: [(name: String, package: String?)] = [],
+        swiftVersion: Int
+    ) {
+        let type: Kind = isTest ? .test : sources.computeModuleType()
+        self.swiftVersion = swiftVersion
+        super.init(
+            name: name,
+            type: type,
+            sources: sources,
+            dependencies: dependencies,
+            productDependencies: productDependencies)
     }
 }
 
-public class CModule: Module {
-    public let path: AbsolutePath
-    public let pkgConfig: RelativePath?
+public class CTarget: Target {
+
+    /// The name of pkgConfig file, if any.
+    public let pkgConfig: String?
+
+    /// List of system package providers, if any.
     public let providers: [SystemPackageProvider]?
-    public init(name: String, type: ModuleType = .systemModule, sources: Sources, path: AbsolutePath, isTest: Bool = false, pkgConfig: RelativePath? = nil, providers: [SystemPackageProvider]? = nil) throws {
-        self.path = path
+
+    /// The package path.
+    public var path: AbsolutePath {
+        return sources.root
+    }
+
+    public init(
+        name: String,
+        path: AbsolutePath,
+        pkgConfig: String? = nil,
+        providers: [SystemPackageProvider]? = nil
+    ) {
+        let sources = Sources(paths: [], root: path)
         self.pkgConfig = pkgConfig
         self.providers = providers
-        try super.init(name: name, type: type, sources: sources, isTest: false)
+        super.init(name: name, type: .systemModule, sources: sources, dependencies: [])
     }
 }
 
-public class ClangModule: Module {
+public class ClangTarget: Target {
 
-    public var includeDir: AbsolutePath {
-        return sources.root.appending(component: "include")
+    public static let defaultPublicHeadersComponent = "include"
+
+    public let includeDir: AbsolutePath
+
+    public init(
+        name: String,
+        includeDir: AbsolutePath,
+        isTest: Bool = false,
+        sources: Sources,
+        dependencies: [Target] = [],
+        productDependencies: [(name: String, package: String?)] = []
+    ) {
+        assert(includeDir.contains(sources.root), "\(includeDir) should be contained in the source root \(sources.root)")
+        let type: Kind = isTest ? .test : sources.computeModuleType()
+        self.includeDir = includeDir
+        super.init(
+            name: name,
+            type: type,
+            sources: sources,
+            dependencies: dependencies,
+            productDependencies: productDependencies)
     }
+}
 
-    public init(name: String, isTest: Bool = false, sources: Sources) throws {
-        // Compute the module type.
-        let isLibrary = !sources.relativePaths.contains { path in
+extension Target: CustomStringConvertible {
+    public var description: String {
+        return "<\(Swift.type(of: self)): \(name)>"
+    }
+}
+
+extension Sources {
+    /// Determine target type based on the sources.
+    fileprivate func computeModuleType() -> Target.Kind {
+        let isLibrary = !relativePaths.contains { path in
             let file = path.basename.lowercased()
             // Look for a main.xxx file avoiding cases like main.xxx.xxx
             return file.hasPrefix("main.") && file.characters.filter({$0 == "."}).count == 1
         }
-        let type: ModuleType = isLibrary ? .library : .executable
-        
-        try super.init(name: name, type: type, sources: sources, isTest: isTest)
-    }
-}
-
-extension Module: CustomStringConvertible {
-    public var description: String {
-        return "\(type(of: self))(\(name))"
+        return isLibrary ? .library : .executable
     }
 }

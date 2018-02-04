@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -18,7 +18,7 @@ public enum GraphError: Swift.Error {
 /// NOTE: The relation is *not* assumed to be reflexive; i.e. the result will
 /// not automatically include `nodes` unless present in the relation defined by
 /// `successors`.
-public func transitiveClosure<T: Hashable>(
+public func transitiveClosure<T>(
     _ nodes: [T], successors: (T) throws -> [T]
 ) rethrows -> Set<T> {
     var result = Set<T>()
@@ -95,7 +95,7 @@ public func topologicalSort<T: Hashable>(
         let popped = stack.removeLast()
         assert(popped == node)
     }
-    
+
     return result.reversed()
 }
 
@@ -110,7 +110,8 @@ public func topologicalSort<T: Hashable>(
 ///
 /// - Returns: nil if a cycle is not found or a tuple with the path to the start of the cycle and the cycle itself.
 public func findCycle<T: Hashable>(
-    _ nodes: [T], successors: (T) throws -> [T]
+    _ nodes: [T],
+    successors: (T) throws -> [T]
 ) rethrows -> (path: [T], cycle: [T])? {
     // Ordered set to hold the current traversed path.
     var path = OrderedSet<T>()

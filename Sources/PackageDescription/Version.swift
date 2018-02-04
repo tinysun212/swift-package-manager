@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -15,8 +15,14 @@ public struct Version {
     public let (major, minor, patch): (Int, Int, Int)
     public let prereleaseIdentifiers: [String]
     public let buildMetadataIdentifier: String?
-    
-    public init(_ major: Int, _ minor: Int, _ patch: Int, prereleaseIdentifiers: [String] = [], buildMetadataIdentifier: String? = nil) {
+
+    public init(
+        _ major: Int,
+        _ minor: Int,
+        _ patch: Int,
+        prereleaseIdentifiers: [String] = [],
+        buildMetadataIdentifier: String? = nil
+    ) {
         self.major = Swift.max(major, 0)
         self.minor = Swift.max(minor, 0)
         self.patch = Swift.max(patch, 0)
@@ -27,18 +33,18 @@ public struct Version {
 
 // MARK: Equatable
 
-extension Version: Equatable {}
-
-public func ==(v1: Version, v2: Version) -> Bool {
-    guard v1.major == v2.major && v1.minor == v2.minor && v1.patch == v2.patch else {
-        return false
+extension Version: Equatable {
+    public static func == (v1: Version, v2: Version) -> Bool {
+        guard v1.major == v2.major && v1.minor == v2.minor && v1.patch == v2.patch else {
+            return false
+        }
+        
+        if v1.prereleaseIdentifiers != v2.prereleaseIdentifiers {
+            return false
+        }
+        
+        return v1.buildMetadataIdentifier == v2.buildMetadataIdentifier
     }
-    
-    if v1.prereleaseIdentifiers != v2.prereleaseIdentifiers {
-        return false
-    }
-    
-    return v1.buildMetadataIdentifier == v2.buildMetadataIdentifier
 }
 
 // MARK: Hashable
@@ -56,49 +62,50 @@ extension Version: Hashable {
         if let build = buildMetadataIdentifier {
             result = (result &* mul) ^ UInt64(bitPattern: Int64(build.hashValue))
         }
-        return Int(truncatingBitPattern: result)
+        return Int(extendingOrTruncating: result)
     }
 }
 
 // MARK: Comparable
 
-extension Version: Comparable {}
-
-public func <(lhs: Version, rhs: Version) -> Bool {
-    let lhsComparators = [lhs.major, lhs.minor, lhs.patch]
-    let rhsComparators = [rhs.major, rhs.minor, rhs.patch]
-    
-    if lhsComparators != rhsComparators {
-        return lhsComparators.lexicographicallyPrecedes(rhsComparators)
-    }
-    
-    guard lhs.prereleaseIdentifiers.count > 0 else {
-        return false // Non-prerelease lhs >= potentially prerelease rhs
-    }
-    
-    guard rhs.prereleaseIdentifiers.count > 0 else {
-        return true // Prerelease lhs < non-prerelease rhs 
-    }
-    
-    for (lhsPrereleaseIdentifier, rhsPrereleaseIdentifier) in zip(lhs.prereleaseIdentifiers, rhs.prereleaseIdentifiers) {
-        if lhsPrereleaseIdentifier == rhsPrereleaseIdentifier {
-            continue
+extension Version: Comparable {
+    public static func < (lhs: Version, rhs: Version) -> Bool {
+        let lhsComparators = [lhs.major, lhs.minor, lhs.patch]
+        let rhsComparators = [rhs.major, rhs.minor, rhs.patch]
+        
+        if lhsComparators != rhsComparators {
+            return lhsComparators.lexicographicallyPrecedes(rhsComparators)
         }
         
-        let typedLhsIdentifier: Any = Int(lhsPrereleaseIdentifier) ?? lhsPrereleaseIdentifier
-        let typedRhsIdentifier: Any = Int(rhsPrereleaseIdentifier) ?? rhsPrereleaseIdentifier
+        guard lhs.prereleaseIdentifiers.count > 0 else {
+            return false // Non-prerelease lhs >= potentially prerelease rhs
+        }
         
-        switch (typedLhsIdentifier, typedRhsIdentifier) {
+        guard rhs.prereleaseIdentifiers.count > 0 else {
+            return true // Prerelease lhs < non-prerelease rhs
+        }
+        
+        let zippedIdentifiers = zip(lhs.prereleaseIdentifiers, rhs.prereleaseIdentifiers)
+        for (lhsPrereleaseIdentifier, rhsPrereleaseIdentifier) in zippedIdentifiers {
+            if lhsPrereleaseIdentifier == rhsPrereleaseIdentifier {
+                continue
+            }
+            
+            let typedLhsIdentifier: Any = Int(lhsPrereleaseIdentifier) ?? lhsPrereleaseIdentifier
+            let typedRhsIdentifier: Any = Int(rhsPrereleaseIdentifier) ?? rhsPrereleaseIdentifier
+            
+            switch (typedLhsIdentifier, typedRhsIdentifier) {
             case let (int1 as Int, int2 as Int): return int1 < int2
             case let (string1 as String, string2 as String): return string1 < string2
             case (is Int, is String): return true // Int prereleases < String prereleases
             case (is String, is Int): return false
-        default:
-            return false
+            default:
+                return false
+            }
         }
+        
+        return lhs.prereleaseIdentifiers.count < rhs.prereleaseIdentifiers.count
     }
-    
-    return lhs.prereleaseIdentifiers.count < rhs.prereleaseIdentifiers.count
 }
 
 // MARK: BidirectionalIndexType

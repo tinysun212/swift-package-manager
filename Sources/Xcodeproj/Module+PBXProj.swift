@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -18,7 +18,7 @@
  (as opposed to the generated UUIDs Xcode typically generates)
 
  We create identifiers with a constant-length unique prefix and
- a unique suffix where the suffix is the filename or module name
+ a unique suffix where the suffix is the filename or target name
  and since we guarantee uniqueness at the PackageDescription
  layer for these properties we satisfy the above constraints.
 */
@@ -27,52 +27,60 @@ import Basic
 import PackageModel
 import PackageLoading
 
-extension Module  {
-    
-    var isLibrary: Bool {
-        return type == .library
-    }
+extension ResolvedTarget {
 
     var infoPlistFileName: String {
         return "\(c99name)_Info.plist"
     }
 
     var productType: String {
-        if isTest {
+        switch type {
+        case .test:
             return "com.apple.product-type.bundle.unit-test"
-        } else if isLibrary {
+        case .library:
             return "com.apple.product-type.framework"
-        } else {
+        case .executable:
             return "com.apple.product-type.tool"
+        case .systemModule:
+            fatalError()
         }
     }
 
     var explicitFileType: String {
-        if isTest {
+        switch type {
+        case .test:
             return "compiled.mach-o.wrapper.cfbundle"
-        } else if isLibrary {
+        case .library:
             return "wrapper.framework"
-        } else {
+        case .executable:
             return "compiled.mach-o.executable"
+        case .systemModule:
+            fatalError()
         }
     }
 
     var productPath: RelativePath {
-        if isTest {
+        switch type {
+        case .test:
             return RelativePath("\(c99name).xctest")
-        } else if isLibrary {
+        case .library:
             return RelativePath("\(c99name).framework")
-        } else {
+        case .executable:
             return RelativePath(name)
+        case .systemModule:
+            fatalError()
         }
     }
 
     var productName: String {
-        if isLibrary && !isTest {
+        switch type {
+        case .library:
             // you can go without a lib prefix, but something unexpected will break
             return "'lib$(TARGET_NAME)'"
-        } else {
+        case .test, .executable:
             return "'$(TARGET_NAME)'"
+        case .systemModule:
+            fatalError()
         }
     }
 }

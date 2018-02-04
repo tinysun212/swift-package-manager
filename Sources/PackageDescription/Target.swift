@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -35,28 +35,30 @@ extension Target.Dependency : ExpressibleByStringLiteral {
   public init(unicodeScalarLiteral value: String) {
     self = .Target(name: value)
   }
-  
+
   public init(extendedGraphemeClusterLiteral value: String) {
     self = .Target(name: value)
   }
 
   public init(stringLiteral value: String) {
     self = .Target(name: value)
-  } 
+  }
 }
 
 // MARK: Equatable
 
-extension Target : Equatable { }
-public func ==(lhs: Target, rhs: Target) -> Bool {
-    return (lhs.name == rhs.name &&
-        lhs.dependencies == rhs.dependencies)
+extension Target : Equatable {
+    public static func == (lhs: Target, rhs: Target) -> Bool {
+        return (lhs.name == rhs.name &&
+            lhs.dependencies == rhs.dependencies)
+    }
 }
 
-extension Target.Dependency : Equatable { }
-public func ==(lhs: Target.Dependency, rhs: Target.Dependency) -> Bool {
-    switch (lhs, rhs) {
-    case (.Target(let a), .Target(let b)):
-        return a == b
+extension Target.Dependency : Equatable {
+    public static func == (lhs: Target.Dependency, rhs: Target.Dependency) -> Bool {
+        switch (lhs, rhs) {
+        case (.Target(let a), .Target(let b)):
+            return a == b
+        }
     }
 }

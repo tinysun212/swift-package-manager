@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -16,7 +16,6 @@ import Utility
 import SourceControl
 
 import func POSIX.rename
-import func POSIX.popen
 
 class ValidLayoutsTests: XCTestCase {
 
@@ -59,34 +58,9 @@ class ValidLayoutsTests: XCTestCase {
             XCTAssertBuilds(prefix)
             let debugPath = prefix.appending(components: ".build", "debug")
             for x in ["Bar", "Baz", "Foo"] {
-                let output = try popen([debugPath.appending(component: x).asString])
+                let output = try Process.checkNonZeroExit(args: debugPath.appending(component: x).asString)
                 XCTAssertEqual(output, "\(x)\n")
             }
-        }
-    }
-
-    func testPackageIdentifiers() {
-        #if os(macOS)
-            // this because sort orders vary on Linux on Mac currently
-            let tags = ["1.3.4-alpha.beta.gamma1", "1.2.3+24", "1.2.3", "1.2.3-beta5"]
-        #else
-            let tags = ["1.2.3", "1.2.3-beta5", "1.3.4-alpha.beta.gamma1", "1.2.3+24"]
-        #endif
-        
-        fixture(name: "DependencyResolution/External/Complex", tags: tags) { prefix in
-            let packageRoot = prefix.appending(component: "app")
-            XCTAssertBuilds(packageRoot, configurations: [.Debug])
-
-            // FIXME: Elminate this.
-            let deckOfPlayingCards = SwiftPMProduct.enableNewResolver ? "deck-of-playing-cards" : "DeckOfPlayingCards"
-            var path = try SwiftPMProduct.packagePath(for: deckOfPlayingCards, packageRoot: packageRoot)
-            XCTAssertEqual(GitRepository(path: path).tags, ["1.2.3-beta5"])
-
-            path = try SwiftPMProduct.packagePath(for: "FisherYates", packageRoot: packageRoot)
-            XCTAssertEqual(GitRepository(path: path).tags, ["1.3.4-alpha.beta.gamma1"])
-
-            path = try SwiftPMProduct.packagePath(for: "PlayingCard", packageRoot: packageRoot)
-            XCTAssertEqual(GitRepository(path: path).tags, ["1.2.3+24"])
         }
     }
 
@@ -114,7 +88,6 @@ class ValidLayoutsTests: XCTestCase {
         ("testSingleModuleSubfolderWithSwiftSuffix", testSingleModuleSubfolderWithSwiftSuffix),
         ("testMultipleModulesLibraries", testMultipleModulesLibraries),
         ("testMultipleModulesExecutables", testMultipleModulesExecutables),
-        ("testPackageIdentifiers", testPackageIdentifiers),
         ("testMadeValidWithExclude", testMadeValidWithExclude),
         ("testExtraCommandLineFlags", testExtraCommandLineFlags),
     ]

@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
  
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
  
  See http://swift.org/LICENSE.txt for license information
@@ -9,36 +9,40 @@
  */
 
 import Basic
-import PackageModel
 import PackageLoading
-
-// FIXME: This doesn't belong here.
-import func POSIX.exit
+import PackageModel
+import Utility
 
 enum PackageGraphError: Swift.Error {
-    /// Indicates two modules with the same name.
-    case duplicateModule(String)
-
-    /// Indicates a non-root package with no modules.
+    /// Indicates a non-root package with no targets.
     case noModules(Package)
+
+    /// The package dependency declaration has cycle in it.
+    case cycleDetected((path: [Manifest], cycle: [Manifest]))
+
+    /// The product dependency not found.
+    case productDependencyNotFound(name: String, package: String?)
+
+    /// The product dependency was found but the package name did not match.
+    case productDependencyIncorrectPackage(name: String, package: String)
 }
 
-extension PackageGraphError: FixableError {
-    var error: String {
+extension PackageGraphError: CustomStringConvertible {
+    public var description: String {
         switch self {
-        case .duplicateModule(let name):
-            return "multiple modules with the name \(name) found"
         case .noModules(let package):
-            return "the package \(package) contains no modules"
-        }
-    }
+            return "the package \(package) contains no targets"
 
-    var fix: String? {
-        switch self {
-        case .duplicateModule(_):
-            return "modules should have a unique name across dependencies"
-        case .noModules(_):
-            return "create at least one module"
+        case .cycleDetected(let cycle):
+            return "found cyclic dependency declaration: " +
+                (cycle.path + cycle.cycle).map({ $0.name }).joined(separator: " -> ") +
+                " -> " + cycle.cycle[0].name
+
+        case .productDependencyNotFound(let name, _):
+            return "The product dependency '\(name)' was not found."
+
+        case .productDependencyIncorrectPackage(let name, let package):
+            return "The product dependency '\(name)' on package '\(package)' was not found."
         }
     }
 }
@@ -49,14 +53,41 @@ public struct PackageGraphLoader {
     public init() { }
 
     /// Load the package graph for the given package path.
-    public func load(rootManifest: Manifest, externalManifests: [Manifest], fileSystem: FileSystem = localFileSystem) throws -> PackageGraph {
-        let allManifests = externalManifests + [rootManifest]
+    public func load(
+        root: PackageGraphRoot,
+        externalManifests: [Manifest],
+        diagnostics: DiagnosticsEngine,
+        fileSystem: FileSystem = localFileSystem,
+        shouldCreateMultipleTestProducts: Bool = false
+    ) -> PackageGraph {
 
-        // Create the packages and convert to modules.
-        var packages: [Package] = []
-        var map: [Package: [Module]] = [:]
-        for (i, manifest) in allManifests.enumerated() {
-            let isRootPackage = (i + 1) == allManifests.count
+        // Manifest url to manifest map.
+        let manifestURLMap = Dictionary(items: (externalManifests + root.manifests).map({ ($0.url, $0) }))
+        let successors: (Manifest) -> [Manifest] = { manifest in
+            manifest.package.dependencies.flatMap({ manifestURLMap[$0.url] })
+        }
+
+        // Construct the root manifest and root dependencies set.
+        let rootManifestSet = Set(root.manifests)
+        let rootDependencies = Set(root.dependencies.flatMap({ manifestURLMap[$0.url] }))
+        let inputManifests = root.manifests + rootDependencies
+
+        // Collect the manifests for which we are going to build packages.
+        let allManifests: [Manifest]
+
+        // Detect cycles in manifest dependencies.
+        if let cycle = findCycle(inputManifests, successors: successors) {
+            diagnostics.emit(PackageGraphError.cycleDetected(cycle))
+            allManifests = inputManifests
+        } else {
+            // Sort all manifests toplogically.
+            allManifests = try! topologicalSort(inputManifests, successors: successors)
+        }
+
+        // Create the packages.
+        var manifestToPackage: [Manifest: Package] = [:]
+        for manifest in allManifests {
+            let isRootPackage = rootManifestSet.contains(manifest)
 
             // Derive the path to the package.
             //
@@ -64,107 +95,149 @@ public struct PackageGraphLoader {
             let packagePath = manifest.path.parentDirectory
 
             // Create a package from the manifest and sources.
-            //
-            // FIXME: We should always load the tests, but just change which
-            // tests we build based on higher-level logic. This would make it
-            // easier to allow testing of external package tests.
-            let builder = PackageBuilder(manifest: manifest, path: packagePath, fileSystem: fileSystem)
-            let package = try builder.construct(includingTestModules: isRootPackage)
-            packages.append(package)
-            
-            map[package] = package.modules + package.testModules
+            let builder = PackageBuilder(
+                manifest: manifest,
+                path: packagePath,
+                fileSystem: fileSystem,
+                diagnostics: diagnostics,
+                isRootPackage: isRootPackage,
+                shouldCreateMultipleTestProducts: shouldCreateMultipleTestProducts
+            )
 
-            // Diagnose empty non-root packages, which are something we allow as a special case.
-            if package.modules.isEmpty {
-                if isRootPackage {
-                    // Ignore and print warning if root package doesn't contain any sources.
-                    print("warning: root package '\(package)' does not contain any sources")
-                    
-                    // Exit now if there are no more packages.
-                    //
-                    // FIXME: This does not belong here.
-                    if allManifests.count == 1 { exit(0) }
-                } else {
+            diagnostics.wrap(with: PackageLocation.Local(name: manifest.name, packagePath: packagePath), {
+                let package = try builder.construct()
+                manifestToPackage[manifest] = package
+
+                // Throw if any of the non-root package is empty.
+                if package.targets.isEmpty && !isRootPackage {
                     throw PackageGraphError.noModules(package)
                 }
-            }
+            })
         }
 
-        // Load all of the package dependencies.
-        //
-        // FIXME: Do this concurrently with creating the packages so we can create immutable ones.
-        for package in packages {
-            // FIXME: This is inefficient.
-            package.dependencies = package.manifest.package.dependencies.map{ dep in packages.pick{ dep.url == $0.url }! }
-        }
-    
-        // Connect up cross-package module dependencies.
-        fillModuleGraph(packages)
-    
-        let rootPackage = packages.last!
-        let externalPackages = packages.dropLast(1)
+        // Resolve dependencies and create resolved packages.
+        let resolvedPackages = createResolvedPackages(
+            allManifests: allManifests, manifestToPackage: manifestToPackage, diagnostics: diagnostics)
 
-        let modules = try recursiveDependencies(packages.flatMap{ map[$0] ?? [] })
-        let externalModules = try recursiveDependencies(externalPackages.flatMap{ map[$0] ?? [] })
-
-        return PackageGraph(rootPackage: rootPackage, modules: modules, externalModules: Set(externalModules))
+        return PackageGraph(
+            rootPackages: resolvedPackages.filter({ rootManifestSet.contains($0.manifest) }),
+            rootDependencies: resolvedPackages.filter({ rootDependencies.contains($0.manifest) })
+        )
     }
 }
 
-/// Add inter-package dependencies.
-///
-/// This function will add cross-package dependencies between a module and all
-/// of the modules produced by any package in the transitive closure of its
-/// containing package's dependencies.
-private func fillModuleGraph(_ packages: [Package]) {
-    for package in packages {
-        let packageModules = package.modules + package.testModules
-        let dependencies = try! topologicalSort(package.dependencies, successors: { $0.dependencies })
-        for dep in dependencies {
-            let depModules = dep.modules.filter {
-                guard !$0.isTest else { return false }
+/// Create resolved packages from the loaded packages.
+private func createResolvedPackages(
+    allManifests: [Manifest],
+    manifestToPackage: [Manifest: Package],
+    diagnostics: DiagnosticsEngine
+) -> [ResolvedPackage] {
 
-                switch $0 {
-                case let module as SwiftModule where module.type == .library:
-                    return true
-                case let module as ClangModule where module.type == .library:
-                    return true
-                case is CModule:
-                    return true
-                default:
-                    return false
-                }
-            }
-            for module in packageModules {
-                // FIXME: This is inefficient.
-                module.dependencies.insert(contentsOf: depModules, at: 0)
-            }
+    var packageURLMap: [String: ResolvedPackage] = [:]
+
+    var resolvedPackages: [ResolvedPackage] = []
+
+    // Resolve each package in reverse topological order of their manifest.
+    for manifest in allManifests.lazy.reversed() {
+
+        // The diagnostics location for this manifest.
+        let packagePath = manifest.path.parentDirectory
+        let diagnosicLocation = { PackageLocation.Local(name: manifest.name, packagePath: packagePath) }
+
+        // We might not have a package for this manifest because we couldn't
+        // load it.  So, just skip it.
+        guard let package = manifestToPackage[manifest] else {
+            continue
         }
+
+        // Get all the external dependencies of this package, ignoring any
+        // dependency we couldn't load.
+        let dependencies = manifest.package.dependencies.flatMap({ packageURLMap[$0.url] })
+
+        // Topologically Sort all the local targets in this package.
+        let targets = try! topologicalSort(package.targets, successors: { $0.dependencies })
+
+        // Make sure these target names are unique in the graph.
+        let dependencyModuleNames = dependencies.lazy.flatMap({ $0.targets }).map({ $0.name })
+        if let duplicateModules = dependencyModuleNames.duplicates(targets.lazy.map({ $0.name })) {
+            diagnostics.emit(ModuleError.duplicateModule(duplicateModules.first!), location: diagnosicLocation())
+        }
+
+        // Add system target dependencies directly to the target's dependencies
+        // because they are not representable as a product.
+        let systemModulesDependencies = dependencies
+            .flatMap({ $0.targets })
+            .filter({ $0.type == .systemModule })
+            .map(ResolvedTarget.Dependency.target)
+
+        let allProducts = dependencies.flatMap({ $0.products }).filter({ $0.type != .test })
+        let allProductsMap = Dictionary(items: allProducts.map({ ($0.name, $0) }))
+
+        // Resolve the targets.
+        var moduleToResolved = [Target: ResolvedTarget]()
+        let resolvedModules: [ResolvedTarget] = targets.lazy.reversed().map({ target in
+
+            // Get the product dependencies for targets in this package.
+            let productDependencies: [ResolvedProduct]
+            switch manifest.package {
+            case .v3:
+                productDependencies = allProducts
+            case .v4:
+                productDependencies = target.productDependencies.flatMap({
+                    // Find the product in this package's dependency products.
+                    guard let product = allProductsMap[$0.name] else {
+                        let error = PackageGraphError.productDependencyNotFound(name: $0.name, package: $0.package)
+                        diagnostics.emit(error, location: diagnosicLocation())
+                        return nil
+                    }
+
+                    // If package name is mentioned, ensure it is valid.
+                    if let packageName = $0.package {
+                        // Find the declared package and check that it contains
+                        // the product we found above.
+                        guard let package = dependencies.first(where: { $0.name == packageName }),
+                              package.products.contains(product) else {
+                            let error = PackageGraphError.productDependencyIncorrectPackage(
+                                name: $0.name, package: packageName)
+                            diagnostics.emit(error, location: diagnosicLocation())
+                            return nil
+                        }
+                    }
+                    return product
+                })
+            }
+
+            let moduleDependencies = target.dependencies.map({ moduleToResolved[$0]! })
+                .map(ResolvedTarget.Dependency.target)
+
+            let dependencies =
+                moduleDependencies +
+                systemModulesDependencies +
+                productDependencies.map(ResolvedTarget.Dependency.product)
+
+            let resolvedTarget = ResolvedTarget(target: target, dependencies: dependencies)
+            moduleToResolved[target] = resolvedTarget
+            return resolvedTarget
+        })
+
+        // Create resolved products.
+        let resolvedProducts = package.products.map({ product in
+            return ResolvedProduct(product: product, targets: product.targets.map({ moduleToResolved[$0]! }))
+        })
+        // Create resolved package.
+        let resolvedPackage = ResolvedPackage(
+            package: package, dependencies: dependencies, targets: resolvedModules, products: resolvedProducts)
+        packageURLMap[package.manifest.url] = resolvedPackage
+        resolvedPackages.append(resolvedPackage)
     }
+    return resolvedPackages
 }
 
-private func recursiveDependencies(_ modules: [Module]) throws -> [Module] {
-    // FIXME: Refactor this to a common algorithm.
-    var stack = modules
-    var set = Set<Module>()
-    var rv = [Module]()
-
-    while stack.count > 0 {
-        let top = stack.removeFirst()
-        if !set.contains(top) {
-            rv.append(top)
-            set.insert(top)
-            stack += top.dependencies
-        } else {
-            // See if the module in the set is actually the same.
-            guard let index = set.index(of: top),
-                  top.sources.root != set[index].sources.root else {
-                continue;
-            }
-
-            throw PackageGraphError.duplicateModule(top.name)
-        }
+// FIXME: Possibly lift this to Basic.
+private extension Sequence where Iterator.Element: Hashable {
+    // Returns the set of duplicate elements in two arrays, if any.
+    func duplicates(_ other: [Iterator.Element]) -> Set<Iterator.Element>? {
+        let dupes = Set(self).intersection(Set(other))
+        return dupes.isEmpty ? nil : dupes
     }
-
-    return rv
 }

@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -17,10 +17,10 @@ extension String {
     public func chomp(separator: String? = nil) -> String {
         func scrub(_ separator: String) -> String {
             var E = endIndex
-            while self[startIndex..<E].hasSuffix(separator) && E > startIndex {
+            while String(self[startIndex..<E]).hasSuffix(separator) && E > startIndex {
                 E = index(before: E)
             }
-            return self[startIndex..<E]
+            return String(self[startIndex..<E])
         }
 
         if let separator = separator {
@@ -70,7 +70,7 @@ extension String {
 
         return String(cc)
     }
-    
+
     /// Splits string around a delimiter string into up to two substrings
     /// If delimiter is not found, the second returned substring is nil
     public func split(around delimiter: String) -> (String, String?) {

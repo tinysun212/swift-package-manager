@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -27,7 +27,7 @@ final class PseudoTerminal {
         if openpty(&master, &slave, nil, nil, nil) != 0 {
             return nil
         }
-        guard let outStream = try? LocalFileOutputByteStream(filePointer: fdopen(slave, "w")) else {
+        guard let outStream = try? LocalFileOutputByteStream(filePointer: fdopen(slave, "w"), closeOnDeinit: false) else {
             return nil
         }
         self.outStream = outStream

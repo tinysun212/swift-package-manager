@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -46,13 +46,21 @@ extension GitRepositoryProviderError: CustomStringConvertible {
             return "Failed to clone \(url) to \(path)"
         }
     }
+
+public enum GitRepositoryProviderError: Swift.Error {
+    case gitCloneFailure(url: String, path: AbsolutePath, errorOutput: String)
 }
 
 /// A `git` repository provider.
 public class GitRepositoryProvider: RepositoryProvider {
-    public init() {
+
+    /// Reference to process set, if installed.
+    private let processSet: ProcessSet?
+
+    public init(processSet: ProcessSet? = nil) {
+        self.processSet = processSet
     }
-    
+
     public func fetch(repository: RepositorySpecifier, to path: AbsolutePath) throws {
         // Perform a bare clone.
         //
@@ -60,27 +68,23 @@ public class GitRepositoryProvider: RepositoryProvider {
         // expected cost of iterative updates on a full clone is less than on a
         // shallow clone.
 
-        // FIXME: We need to define if this is only for the initial clone, or
-        // also for the update, and if for the update then we need to handle it
-        // here.
-
-        // FIXME: Need to think about & handle submodules.
         precondition(!exists(path))
-        
-        do {
-            // FIXME: We need infrastructure in this subsystem for reporting
-            // status information.
-            let env = ProcessInfo.processInfo.environment
-            try system(
-                Git.tool, "clone", "--bare", repository.url, path.asString,
-                environment: env, message: nil)
-        } catch POSIX.Error.exitStatus {
-            // Git 2.0 or higher is required
-            if let majorVersion = Git.majorVersionNumber, majorVersion < 2 {
-                throw Utility.Error.obsoleteGitVersion
-            } else {
-                throw GitRepositoryProviderError.gitCloneFailure(url: repository.url, path: path)
-            }
+
+        // FIXME: We need infrastructure in this subsystem for reporting
+        // status information.
+
+        let process = Process(
+            args: Git.tool, "clone", "--mirror", repository.url, path.asString, environment: Git.environment)
+        // Add to process set.
+        try processSet?.add(process)
+        // Launch the process.
+        try process.launch()
+        // Block until cloning completes.
+        let result = try process.waitUntilExit()
+        // Throw if cloning failed.
+        guard result.exitStatus == .terminated(code: 0) else {
+            let errorOutput = try (result.utf8Output() + result.utf8stderrOutput()).chuzzle() ?? ""
+            throw GitRepositoryProviderError.gitCloneFailure(url: repository.url, path: path, errorOutput: errorOutput)
         }
     }
 
@@ -99,15 +103,14 @@ public class GitRepositoryProvider: RepositoryProvider {
             // For editable clones, i.e. the user is expected to directly work on them, first we create
             // a clone from our cache of repositories and then we replace the remote to the one originally
             // present in the bare repository.
-            try system(
-                    Git.tool, "clone", sourcePath.asString, destinationPath.asString, message: nil)
+            try Process.checkNonZeroExit(args:
+                    Git.tool, "clone", sourcePath.asString, destinationPath.asString)
             // The default name of the remote.
             let origin = "origin"
             // In destination repo remove the remote which will be pointing to the source repo.
             let clone = GitRepository(path: destinationPath)
-            try clone.remove(remote: origin)
-            // Add the original remote to the new clone.
-            try clone.add(remote: origin, url: repository.url)
+            // Set the original remote to the new clone.
+            try clone.setURL(remote: origin, url: repository.url)
             // FIXME: This is unfortunate that we have to fetch to update remote's data.
             try clone.fetch()
         } else {
@@ -119,10 +122,8 @@ public class GitRepositoryProvider: RepositoryProvider {
             // re-resolve such that the objects in this repository changed, we would
             // only ever expect to get back a revision that remains present in the
             // object storage.
-            //
-            // FIXME: Need to think about & handle submodules.
-            try system(
-                    Git.tool, "clone", "--shared", sourcePath.asString, destinationPath.asString, message: nil)
+            try Process.checkNonZeroExit(args:
+                    Git.tool, "clone", "--shared", sourcePath.asString, destinationPath.asString)
         }
     }
 
@@ -197,6 +198,7 @@ public class GitRepository: Repository, WorkingCheckout {
         struct Entry {
             enum EntryType {
                 case blob
+                case commit
                 case executableBlob
                 case symlink
                 case tree
@@ -213,6 +215,8 @@ public class GitRepository: Repository, WorkingCheckout {
                         self = .executableBlob
                     case 0o120000:
                         self = .symlink
+                    case 0o160000:
+                        self = .commit
                     default:
                         return nil
                     }
@@ -228,7 +232,7 @@ public class GitRepository: Repository, WorkingCheckout {
             /// The name of the object.
             let name: String
         }
-        
+
         /// The object hash.
         let hash: Hash
 
@@ -249,29 +253,25 @@ public class GitRepository: Repository, WorkingCheckout {
         self.path = path
         self.isWorkingRepo = isWorkingRepo
         do {
-            let isBareRepo = try Git.runPopen([Git.tool, "-C", path.asString, "rev-parse", "--is-bare-repository"]).chomp() == "true"
+            let isBareRepo = try Process.checkNonZeroExit(
+                    args: Git.tool, "-C", path.asString, "rev-parse", "--is-bare-repository").chomp() == "true"
             assert(isBareRepo != isWorkingRepo)
         } catch {
             // Ignore if we couldn't run popen for some reason.
         }
     }
 
-    /// Adds a remote to the git repository.
+    /// Changes URL for the remote.
     ///
     /// - parameters:
-    ///   - remote: The name of the remote. It shouldn't already be present.
-    ///   - url: The url of the remote.
-    func add(remote: String, url: String) throws {
-        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "add", remote, url])
-    }
-
-    /// Removes a remote from the git repository.
-    ///
-    /// - parameters:
-    ///   - remote: The name of the remote to be removed. It should already be present.
-    ///   - url: the url of the remote.
-    func remove(remote: String) throws {
-        try runCommandQuietly([Git.tool, "-C", path.asString, "remote", "remove", remote])
+    ///   - remote: The name of the remote to operate on. It should already be present.
+    ///   - url: The new url of the remote.
+    func setURL(remote: String, url: String) throws {
+        try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "remote", "set-url", remote, url)
+            return
+        }
     }
 
     /// Gets the current list of remotes of the repository.
@@ -280,13 +280,15 @@ public class GitRepository: Repository, WorkingCheckout {
     public func remotes() throws -> [(name: String, url: String)] {
         return try queue.sync {
             // Get the remote names.
-            let remoteNamesOutput = try Git.runPopen([Git.tool, "-C", path.asString, "remote"]).chomp()
+            let remoteNamesOutput = try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "remote").chomp()
             let remoteNames = remoteNamesOutput.characters.split(separator: "\n").map(String.init)
-            return try remoteNames.map { name in
+            return try remoteNames.map({ name in
                 // For each remote get the url.
-                let url = try Git.runPopen([Git.tool, "-C", path.asString, "config", "--get", "remote.\(name).url"]).chomp()
+                let url = try Process.checkNonZeroExit(
+                    args: Git.tool, "-C", path.asString, "config", "--get", "remote.\(name).url").chomp()
                 return (name, url)
-            }
+            })
         }
     }
 
@@ -305,12 +307,13 @@ public class GitRepository: Repository, WorkingCheckout {
     }
 
     /// Cache for the tags.
-    private var tagsCache: [String]? = nil
+    private var tagsCache: [String]?
 
     /// Returns the tags present in repository.
     private func getTags() -> [String] {
         // FIXME: Error handling.
-        let tagList = try! Git.runPopen([Git.tool, "-C", path.asString, "tag", "-l"])
+        let tagList = try! Process.checkNonZeroExit(
+            args: Git.tool, "-C", path.asString, "tag", "-l").chomp()
         return tagList.characters.split(separator: "\n").map(String.init)
     }
 
@@ -318,8 +321,14 @@ public class GitRepository: Repository, WorkingCheckout {
         return try Revision(identifier: resolveHash(treeish: tag, type: "commit").bytes.asString!)
     }
 
+    public func resolveRevision(identifier: String) throws -> Revision {
+        return try Revision(identifier: resolveHash(treeish: identifier, type: "commit").bytes.asString!)
+    }
+
     public func fetch() throws {
-        try runCommandQuietly([Git.tool, "-C", path.asString, "fetch", "--tags"]) {
+        try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "remote", "update", "-p", environment: Git.environment)
             self.tagsCache = nil
         }
     }
@@ -331,14 +340,15 @@ public class GitRepository: Repository, WorkingCheckout {
             // Detect if there is a staged or unstaged diff.
             // This won't detect new untracked files, but it is
             // just a safety measure for now.
-            let diffArgs = ["--no-ext-diff", "--quiet", "--exit-code"]
-            do {
-                _ = try Git.runPopen([Git.tool, "-C", path.asString, "diff"] + diffArgs)
-                _ = try Git.runPopen([Git.tool, "-C", path.asString, "diff", "--cached"] + diffArgs)
-            } catch {
-                return true
+            let args = [Git.tool, "-C", path.asString, "diff", "--no-ext-diff", "--quiet", "--exit-code"]
+            var nonZeroExit = false
+
+            for args in [args, args + ["--cached"]] {
+                let result = try? Process.popen(arguments: args)
+                nonZeroExit = nonZeroExit || result?.exitStatus != .terminated(code: 0)
             }
-            return false
+
+            return nonZeroExit
         }
     }
 
@@ -349,39 +359,65 @@ public class GitRepository: Repository, WorkingCheckout {
     // MARK: Working Checkout Interface
 
     public func hasUnpushedCommits() throws -> Bool {
-        let hasOutput = try runPopen([Git.tool, "-C", path.asString, "log", "--branches", "--not", "--remotes"]).chomp().isEmpty
-        return !hasOutput
+        return try queue.sync {
+            let hasOutput = try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "log", "--branches", "--not", "--remotes").chomp().isEmpty
+            return !hasOutput
+        }
     }
 
     public func getCurrentRevision() throws -> Revision {
-        return Revision(identifier: try runPopen([Git.tool, "-C", path.asString, "rev-parse", "--verify", "HEAD"]).chomp())
+        return try queue.sync {
+            return try Revision(
+                identifier: Process.checkNonZeroExit(
+                    args: Git.tool, "-C", path.asString, "rev-parse", "--verify", "HEAD").chomp())
+        }
     }
 
     public func checkout(tag: String) throws {
         // FIXME: Audit behavior with off-branch tags in remote repositories, we
         // may need to take a little more care here.
-        try runCommandQuietly([Git.tool, "-C", path.asString, "reset", "--hard", tag])
+        try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "reset", "--hard", tag)
+            try self.updateSubmoduleAndClean()
+        }
     }
 
     public func checkout(revision: Revision) throws {
         // FIXME: Audit behavior with off-branch tags in remote repositories, we
         // may need to take a little more care here.
-        try runCommandQuietly([Git.tool, "-C", path.asString, "checkout", "-f", revision.identifier])
+        try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "checkout", "-f", revision.identifier)
+            try self.updateSubmoduleAndClean()
+        }
+    }
+
+    /// Initializes and updates the submodules, if any, and cleans left over the files and directories using git-clean.
+    private func updateSubmoduleAndClean() throws {
+        try Process.checkNonZeroExit(args: Git.tool,
+            "-C", path.asString, "submodule", "update", "--init", "--recursive", environment: Git.environment)
+        try Process.checkNonZeroExit(args: Git.tool,
+            "-C", path.asString, "clean", "-ffdx")
     }
 
     /// Returns true if a revision exists.
     public func exists(revision: Revision) -> Bool {
-        do {
-           _ = try runCommandQuietly([Git.tool, "-C", path.asString, "rev-parse", "--verify", revision.identifier])
-        } catch {
-            return false
+        return queue.sync {
+            let result = try? Process.popen(
+                args: Git.tool, "-C", path.asString, "rev-parse", "--verify", revision.identifier)
+            return result?.exitStatus == .terminated(code: 0)
         }
-        return true
     }
 
     public func checkout(newBranch: String) throws {
         precondition(isWorkingRepo, "This operation should run in a working repo.")
-        try runCommandQuietly([Git.tool, "-C", path.asString, "checkout", "-b", newBranch])
+        try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "checkout", "-b", newBranch)
+            return
+        }
     }
 
     // MARK: Git Operations
@@ -397,7 +433,10 @@ public class GitRepository: Repository, WorkingCheckout {
         } else {
             specifier = treeish
         }
-        let response = try runPopen([Git.tool, "-C", path.asString, "rev-parse", "--verify", specifier]).chomp()
+        let response = try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "rev-parse", "--verify", specifier).chomp()
+        }
         if let hash = Hash(response) {
             return hash
         } else {
@@ -416,25 +455,31 @@ public class GitRepository: Repository, WorkingCheckout {
     /// Read a tree object.
     func read(tree hash: Hash) throws -> Tree {
         // Get the contents using `ls-tree`.
-        let treeInfo = try runPopen([Git.tool, "-C", path.asString, "ls-tree", hash.bytes.asString!])
+        let treeInfo = try queue.sync {
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "ls-tree", hash.bytes.asString!)
+        }
 
         var contents: [Tree.Entry] = []
         for line in treeInfo.components(separatedBy: "\n") {
             // Ignore empty lines.
             if line == "" { continue }
-            
+
             // Each line in the response should match:
             //
             //   `mode type hash\tname`
             //
-            // where `mode` is the 6-byte octal file mode, `type` is a 4-byte
-            // type ("blob" or "tree"), `hash` is the hash, and the remainder of
+            // where `mode` is the 6-byte octal file mode, `type` is a 4-byte or 6-byte
+            // type ("blob", "tree", "commit"), `hash` is the hash, and the remainder of
             // the line is the file name.
             let bytes = ByteString(encodingAsUTF8: line)
-            guard bytes.count > 6 + 1 + 4 + 1 + 40 + 1,
+            let expectedBytesCount = 6 + 1 + 4 + 1 + 40 + 1
+            guard bytes.count > expectedBytesCount,
                   bytes.contents[6] == UInt8(ascii: " "),
-                  bytes.contents[6 + 1 + 4] == UInt8(ascii: " "),
-                  bytes.contents[6 + 1 + 4 + 1 + 40] == UInt8(ascii: "\t") else {
+                  // Search for the second space since `type` is of variable length.
+                  let secondSpace = bytes.contents[6 + 1 ..< bytes.contents.endIndex].index(of: UInt8(ascii: " ")),
+                  bytes.contents[secondSpace] == UInt8(ascii: " "),
+                  bytes.contents[secondSpace + 1 + 40] == UInt8(ascii: "\t") else {
                 throw GitInterfaceError.malformedResponse("unexpected tree entry '\(line)' in '\(treeInfo)'")
             }
 
@@ -443,8 +488,8 @@ public class GitRepository: Repository, WorkingCheckout {
                 (acc << 3) | (Int(char) - Int(UInt8(ascii: "0")))
             }
             guard let type = Tree.Entry.EntryType(mode: mode),
-                  let hash = Hash(asciiBytes: bytes.contents[(6 + 1 + 4 + 1)..<(6 + 1 + 4 + 1 + 40)]),
-                  let name = ByteString(bytes.contents[(6 + 1 + 4 + 1 + 40 + 1)..<bytes.count]).asString else {
+                  let hash = Hash(asciiBytes: bytes.contents[(secondSpace + 1)..<(secondSpace + 1 + 40)]),
+                  let name = ByteString(bytes.contents[(secondSpace + 1 + 40 + 1)..<bytes.count]).asString else {
                 throw GitInterfaceError.malformedResponse("unexpected tree entry '\(line)' in '\(treeInfo)'")
             }
 
@@ -452,7 +497,7 @@ public class GitRepository: Repository, WorkingCheckout {
             if name.hasPrefix("\"") {
                 throw GitInterfaceError.malformedResponse("unexpected tree entry '\(line)' in '\(treeInfo)'")
             }
-            
+
             contents.append(Tree.Entry(hash: hash, type: type, name: name))
         }
 
@@ -461,34 +506,22 @@ public class GitRepository: Repository, WorkingCheckout {
 
     /// Read a blob object.
     func read(blob hash: Hash) throws -> ByteString {
-        // Get the contents using `cat-file`.
-        //
-        // FIXME: We need to get the raw bytes back, not a String.
-        let output = try runPopen([Git.tool, "-C", path.asString, "cat-file", "-p", hash.bytes.asString!])
-        return ByteString(encodingAsUTF8: output)
-    }
-
-    /// Runs the command in the serial queue and runs the completion closure if present.
-    private func runCommandQuietly(_ command: [String], completion: (() -> Void)? = nil) throws {
-        try queue.sync {
-            try Git.runCommandQuietly(command)
-            completion?()
-        }
-    }
-
-    /// Executes popen in the serial queue.
-    private func runPopen(_ command: [String]) throws -> String {
         return try queue.sync {
-            return try Git.runPopen(command)
+            // Get the contents using `cat-file`.
+            //
+            // FIXME: We need to get the raw bytes back, not a String.
+            let output = try Process.checkNonZeroExit(
+                args: Git.tool, "-C", path.asString, "cat-file", "-p", hash.bytes.asString!)
+            return ByteString(encodingAsUTF8: output)
         }
     }
 }
 
-func ==(_ lhs: GitRepository.Commit, _ rhs: GitRepository.Commit) -> Bool {
+func == (_ lhs: GitRepository.Commit, _ rhs: GitRepository.Commit) -> Bool {
     return lhs.hash == rhs.hash && lhs.tree == rhs.tree
 }
 
-func ==(_ lhs: GitRepository.Hash, _ rhs: GitRepository.Hash) -> Bool {
+func == (_ lhs: GitRepository.Hash, _ rhs: GitRepository.Hash) -> Bool {
     return lhs.bytes == rhs.bytes
 }
 
@@ -499,12 +532,12 @@ func ==(_ lhs: GitRepository.Hash, _ rhs: GitRepository.Hash) -> Bool {
 private class GitFileSystemView: FileSystem {
     typealias Hash = GitRepository.Hash
     typealias Tree = GitRepository.Tree
-    
+
     // MARK: Git Object Model
 
     // The map of loaded trees.
     var trees: [Hash: Tree] = [:]
-    
+
     /// The underlying repository.
     let repository: GitRepository
 
@@ -529,7 +562,7 @@ private class GitFileSystemView: FileSystem {
         for component in path.components.dropFirst(1) {
             // Skip the root pseudo-component.
             if component == "/" { continue }
-            
+
             // We have a component to resolve, so the current entry must be a tree.
             guard current.type == .tree else {
                 throw FileSystemError.notDirectory
@@ -562,7 +595,7 @@ private class GitFileSystemView: FileSystem {
         trees[hash] = tree
         return tree
     }
-    
+
     func exists(_ path: AbsolutePath) -> Bool {
         do {
             return try getEntry(path) != nil
@@ -570,7 +603,7 @@ private class GitFileSystemView: FileSystem {
             return false
         }
     }
-    
+
     func isFile(_ path: AbsolutePath) -> Bool {
         do {
             if let entry = try getEntry(path), entry.type != .tree {
@@ -581,7 +614,7 @@ private class GitFileSystemView: FileSystem {
             return false
         }
     }
-    
+
     func isDirectory(_ path: AbsolutePath) -> Bool {
         do {
             if let entry = try getEntry(path), entry.type == .tree {
@@ -592,7 +625,7 @@ private class GitFileSystemView: FileSystem {
             return false
         }
     }
-    
+
     func isSymlink(_ path: AbsolutePath) -> Bool {
         do {
             if let entry = try getEntry(path), entry.type == .symlink {
@@ -603,7 +636,14 @@ private class GitFileSystemView: FileSystem {
             return false
         }
     }
-    
+
+    func isExecutableFile(_ path: AbsolutePath) -> Bool {
+        if let entry = try? getEntry(path), entry?.type == .executableBlob {
+            return true
+        }
+        return false
+    }
+
     func getDirectoryContents(_ path: AbsolutePath) throws -> [String] {
         guard let entry = try getEntry(path) else {
             throw FileSystemError.noEntry
@@ -612,9 +652,9 @@ private class GitFileSystemView: FileSystem {
             throw FileSystemError.notDirectory
         }
 
-        return try getTree(entry.hash).contents.map{ $0.name }
+        return try getTree(entry.hash).contents.map({ $0.name })
     }
-    
+
     func readFileContents(_ path: AbsolutePath) throws -> ByteString {
         guard let entry = try getEntry(path) else {
             throw FileSystemError.noEntry
@@ -629,16 +669,33 @@ private class GitFileSystemView: FileSystem {
     }
 
     // MARK: Unsupported methods.
-    
+
     func createDirectory(_ path: AbsolutePath) throws {
         throw FileSystemError.unsupported
     }
 
     func createDirectory(_ path: AbsolutePath, recursive: Bool) throws {
         throw FileSystemError.unsupported
-    }        
+    }
 
     func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws {
         throw FileSystemError.unsupported
+    }
+
+    func removeFileTree(_ path: AbsolutePath) {
+        fatalError("unsupported")
+    }
+
+    func chmod(_ mode: FileMode, path: AbsolutePath, options: Set<FileMode.Option>) throws {
+        throw FileSystemError.unsupported
+    }
+}
+
+extension GitRepositoryProviderError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .gitCloneFailure(let url, let path, let errorOutput):
+            return "Failed to clone \(url) to \(path.asString):\n\(errorOutput)"
+        }
     }
 }

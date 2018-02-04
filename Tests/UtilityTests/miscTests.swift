@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -9,6 +9,8 @@
  */
 
 import XCTest
+import TestSupport
+import Basic
 @testable import Utility
 
 class miscTests: XCTestCase {
@@ -26,7 +28,24 @@ class miscTests: XCTestCase {
         XCTAssert(getClangVersion(versionOutput: versionOutput) ?? (0, 0) == (2, 4))
     }
 
+    func testVersion() throws {
+        // Valid.
+        XCTAssertEqual(Version(string: "0.9.21-alpha.beta+1011"),
+            Version(0,9,21, prereleaseIdentifiers: ["alpha", "beta"], buildMetadataIdentifiers: ["1011"]))
+        XCTAssertEqual(Version(string: "0.9.21+1011"),
+            Version(0,9,21, prereleaseIdentifiers: [], buildMetadataIdentifiers: ["1011"]))
+        XCTAssertEqual(Version(string: "01.002.0003"), Version(1,2,3))
+        XCTAssertEqual(Version(string: "0.9.21"), Version(0,9,21))
+
+        // Invalid.
+        let invalidVersions = ["foo", "1", "1.0", "1.0.", "1.0.0."]
+        for v in invalidVersions {
+            XCTAssertTrue(Version(string: v) == nil)
+        }
+    }
+
     static var allTests = [
         ("testClangVersionOutput", testClangVersionOutput),
+        ("testVersion", testVersion),
     ]
 }

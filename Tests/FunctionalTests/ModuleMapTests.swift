@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -13,8 +13,6 @@ import XCTest
 import TestSupport
 import Basic
 import Utility
-
-import func POSIX.popen
 
 #if os(macOS)
 private let dylib = "dylib"
@@ -46,9 +44,9 @@ class ModuleMapsTestCase: XCTestCase {
 
             XCTAssertBuilds(prefix.appending(component: "App"), Xld: Xld)
 
-            let debugout = try popen([prefix.appending(RelativePath("App/.build/debug/App")).asString])
+            let debugout = try Process.checkNonZeroExit(args: prefix.appending(RelativePath("App/.build/debug/App")).asString)
             XCTAssertEqual(debugout, "123\n")
-            let releaseout = try popen([prefix.appending(RelativePath("App/.build/release/App")).asString])
+            let releaseout = try Process.checkNonZeroExit(args: prefix.appending(RelativePath("App/.build/release/App")).asString)
             XCTAssertEqual(releaseout, "123\n")
         }
     }
@@ -60,7 +58,7 @@ class ModuleMapsTestCase: XCTestCase {
 
             func verify(_ conf: String, file: StaticString = #file, line: UInt = #line) throws {
                 let expectedOutput = "calling Y.bar()\nY.bar() called\nX.foo() called\n123\n"
-                let out = try popen([prefix.appending(components: "packageA", ".build", conf, "packageA").asString])
+                let out = try Process.checkNonZeroExit(args: prefix.appending(components: "packageA", ".build", conf, "packageA").asString)
                 XCTAssertEqual(out, expectedOutput)
             }
 

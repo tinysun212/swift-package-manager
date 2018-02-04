@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -34,8 +34,8 @@ public struct LazyCache<Class, T> {
     // a reader-writer lock or something similar here.
     private var lock = Lock()
     let body: (Class) -> () -> T
-    var cachedValue: T? = nil
-    
+    var cachedValue: T?
+
     /// Create a lazy cache from a method value.
     public init(_ body: @escaping (Class) -> () -> T) {
         self.body = body

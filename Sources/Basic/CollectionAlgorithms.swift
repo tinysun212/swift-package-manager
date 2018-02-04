@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -26,5 +26,25 @@ extension BidirectionalCollection where Iterator.Element : Comparable {
             }
         }
         return nil
+    }
+}
+
+public extension Sequence where Iterator.Element: Hashable {
+
+    /// Finds duplicates in given sequence of Hashables.
+    /// - Returns: duplicated elements in the invoking sequence.
+    public func findDuplicates() -> [Iterator.Element] {
+        var unique = Set<Iterator.Element>()
+        var duplicate = Array<Iterator.Element>()
+
+        for element in self {
+            guard !unique.contains(element) else {
+                duplicate.append(element)
+                continue
+            }
+            unique.insert(element)
+        }
+
+        return duplicate
     }
 }

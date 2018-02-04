@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -9,7 +9,7 @@
 */
 
 public struct URL {
-    
+
     /// Parses the URL type of a git repository
     /// e.g. https://github.com/apple/swift returns "https"
     /// e.g. git@github.com:apple/swift returns "git"
@@ -28,7 +28,7 @@ public struct URL {
                 return head.lowercased()
             }
         }
-        
+
         for delim in ["://", "@"] {
             if let found = prefixOfSplitBy(delim) {
                 return found

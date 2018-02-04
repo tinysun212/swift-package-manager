@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -19,15 +19,15 @@ import XCTest
 
 class GenerateXcodeprojTests: XCTestCase {
     func testXcodebuildCanParseIt() {
-#if os(macOS)
+      #if os(macOS)
         mktmpdir { dstdir in
-            func dummy() throws -> [Module] {
-                return [try SwiftModule(name: "DummyModuleName", sources: Sources(paths: [], root: dstdir))]
-            }
+            let fileSystem = InMemoryFileSystem(emptyFiles: "/Sources/DummyModuleName/source.swift")
+
+            let diagnostics = DiagnosticsEngine()
+            let graph = loadMockPackageGraph(["/": Package(name: "Foo")], root: "/", diagnostics: diagnostics, in: fileSystem)
+            XCTAssertFalse(diagnostics.hasErrors)
 
             let projectName = "DummyProjectName"
-            let dummyPackage = Package(manifest: Manifest(path: dstdir, url: dstdir.asString, package: PackageDescription.Package(name: "Foo"), products: [], version: nil), path: dstdir, modules: [], testModules: [], products: [])
-            let graph = PackageGraph(rootPackage: dummyPackage, modules: try dummy(), externalModules: [])
             let outpath = try Xcodeproj.generate(outputDir: dstdir, projectName: projectName, graph: graph, options: XcodeprojOptions())
 
             XCTAssertDirectoryExists(outpath)
@@ -35,36 +35,55 @@ class GenerateXcodeprojTests: XCTestCase {
 
             // We can only validate this on OS X.
             // Don't allow TOOLCHAINS to be overriden here, as it breaks the test below.
-            let output = try popen(["env", "-u", "TOOLCHAINS", "xcodebuild", "-list", "-project", outpath.asString]).chomp()
+            let output = try Process.checkNonZeroExit(
+                args: "env", "-u", "TOOLCHAINS", "xcodebuild", "-list", "-project", outpath.asString).chomp()
 
             let expectedOutput = "Information about project \"DummyProjectName\":\n    Targets:\n        DummyModuleName\n\n    Build Configurations:\n        Debug\n        Release\n\n    If no build configuration is specified and -scheme is not passed then \"Debug\" is used.\n\n    Schemes:\n        DummyProjectName\n".chomp()
 
-            XCTAssertEqual(output, expectedOutput)
+            // FIXME: This should compare the outputs instead of contains() once we can capture
+            // just stdout from subprocess's output stream.
+            XCTAssert(output.contains(expectedOutput))
         }
-#endif
+      #endif
     }
 
-    func testXcconfigOverrideValidatesPath() {
-        mktmpdir { dstdir in
-            let fileSystem = InMemoryFileSystem(emptyFiles: "/Bar/bar.swift")
-            let graph = try loadMockPackageGraph(["/Bar": Package(name: "Bar")], root: "/Bar", in: fileSystem)
+    func testXcconfigOverrideValidatesPath() throws {
+        let diagnostics = DiagnosticsEngine()
+        let fileSystem = InMemoryFileSystem(emptyFiles: "/Bar/bar.swift")
+        let graph = loadMockPackageGraph(["/Bar": Package(name: "Bar")], root: "/Bar", diagnostics: diagnostics, in: fileSystem)
+        XCTAssertFalse(diagnostics.hasErrors)
 
-            var options = XcodeprojOptions()
-            options.xcconfigOverrides = AbsolutePath("/doesntexist")
-            do {
-                _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"),
-                                     graph: graph, extraDirs: [], options: options, fileSystem: fileSystem)
-                XCTFail("Project generation should have failed")
-            } catch ProjectGenerationError.xcconfigOverrideNotFound(let path) {
-                XCTAssertEqual(options.xcconfigOverrides, path)
-            } catch {
-                XCTFail("Project generation shouldn't have had another error")
-            }
+        let options = XcodeprojOptions(xcconfigOverrides: AbsolutePath("/doesntexist"))
+        do {
+            _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"),
+                                 graph: graph, extraDirs: [], options: options, fileSystem: fileSystem)
+            XCTFail("Project generation should have failed")
+        } catch ProjectGenerationError.xcconfigOverrideNotFound(let path) {
+            XCTAssertEqual(options.xcconfigOverrides, path)
+        } catch {
+            XCTFail("Project generation shouldn't have had another error")
         }
+    }
+
+    func testGenerateXcodeprojWithInvalidModuleNames() throws {
+        let diagnostics = DiagnosticsEngine()
+        let moduleName = "Modules"
+        let warningStream = BufferedOutputByteStream()
+        let fileSystem = InMemoryFileSystem(emptyFiles: "/Sources/\(moduleName)/example.swift")
+        let graph = loadMockPackageGraph(["/Sources": Package(name: moduleName)], root: "/Sources", diagnostics: diagnostics, in: fileSystem)
+        XCTAssertFalse(diagnostics.hasErrors)
+
+        _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"),
+                             graph: graph, extraDirs: [], options: XcodeprojOptions(), fileSystem: fileSystem,
+                             warningStream: warningStream)
+
+        let warnings = warningStream.bytes.asReadableString
+        XCTAssertTrue(warnings.contains("warning: Target '\(moduleName)' conflicts with required framework filenames, rename this target to avoid conflicts."))
     }
 
     static var allTests = [
         ("testXcodebuildCanParseIt", testXcodebuildCanParseIt),
         ("testXcconfigOverrideValidatesPath", testXcconfigOverrideValidatesPath),
+        ("testGenerateXcodeprojWithInvalidModuleNames", testGenerateXcodeprojWithInvalidModuleNames),
     ]
 }

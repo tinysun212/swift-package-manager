@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -9,104 +9,163 @@
 */
 
 import Basic
+import PackageLoading
 import PackageModel
-
-import enum Utility.ColorWrap
-import enum Utility.Stream
+import SourceControl
+import Utility
 import func POSIX.exit
-import func Utility.isTTY
-import var Utility.stderr
-import enum PackageLoading.ManifestParseError
+import Workspace
 
-public enum Error: Swift.Error {
-    case noManifestFound
+enum Error: Swift.Error {
+    /// Couldn't find all tools needed by the package manager.
     case invalidToolchain(problem: String)
-    case buildYAMLNotFound(String)
-    case repositoryHasChanges(String)
+
+    /// The root manifest was not found.
+    case rootManifestFileNotFound
+
+    /// There were fatal diagnostics during the operation.
+    case hasFatalDiagnostics
 }
 
-extension Error: FixableError {
-    public var error: String {
+extension Error: CustomStringConvertible {
+    var description: String {
         switch self {
-        case .noManifestFound:
-            return "no \(Manifest.filename) file found"
         case .invalidToolchain(let problem):
-            return "invalid inferred toolchain: \(problem)"
-        case .buildYAMLNotFound(let value):
-            return "no build YAML found: \(value)"
-        case .repositoryHasChanges(let value):
-            return "repository has changes: \(value)"
-        }
-    }
-
-    public var fix: String? {
-        switch self {
-        case .noManifestFound:
-            return "create a file named \(Manifest.filename) or run `swift package init` to initialize a new package"
-        case .repositoryHasChanges(_):
-            return "stage the changes and reapply them after updating the repository"
-        default:
-            return nil
+            return problem
+        case .rootManifestFileNotFound:
+            return "The root manifest was not found"
+        case .hasFatalDiagnostics:
+            return ""
         }
     }
 }
 
-public func handle(error: Any, usage: ((String) -> Void) -> Void) -> Never {
+public func handle(error: Any) {
+    switch error {
+
+    // If we got instance of any error, handle the underlying error.
+    case let anyError as AnyError:
+        handle(error: anyError.underlyingError)
+
+    default:
+        _handle(error)
+    }
+}
+
+// The name has underscore because of SR-4015.
+private func _handle(_ error: Any) {
 
     switch error {
-    case OptionParserError.multipleModesSpecified(let modes):
-        print(error: error)
+    case Error.hasFatalDiagnostics:
+        break
 
-        if isTTY(.stdErr) && (modes.contains{ ["--help", "-h"].contains($0) }) {
-            print("", to: &stderr)
-            usage { print($0, to: &stderr) }
-        }
-    case OptionParserError.noCommandProvided(let hint):
-        if !hint.isEmpty {
-            print(error: error)
-        }
-        if isTTY(.stdErr) {
-            usage { print($0, to: &stderr) }
-        }
-    case is OptionParserError:
+    case ArgumentParserError.expectedArguments(let parser, _):
         print(error: error)
-        if isTTY(.stdErr) {
-            let argv0 = CommandLine.arguments.first ?? "swift package"
-            print("enter `\(argv0) --help' for usage information", to: &stderr)
-        }
+        parser.printUsage(on: stderrStream)
+
     case let error as FixableError:
         print(error: error.error)
         if let fix = error.fix {
             print(fix: fix)
         }
-    case ManifestParseError.invalidManifestFormat(let errors):
-        var errorString = "invalid manifest format"
-        if let errors = errors {
-            errorString += "; " + errors.joined(separator: ", ")
+
+    case Package.Error.noManifest(let url, let version):
+        var string = "\(url) has no manifest"
+        if let version = version {
+            string += " for version \(version)"
         }
-        print(error: errorString)
-    case PackageToolOperationError.insufficientOptions(let usage):
-        print(usage, to: &stderr)
+        print(error: string)
+
     default:
         print(error: error)
     }
-
-    exit(1)
 }
 
-private func print(error: Any) {
-    if ColorWrap.isAllowed(for: .stdErr) {
-        print(ColorWrap.wrap("error:", with: .Red, for: .stdErr), error, to: &stderr)
-    } else {
-        let cmd = AbsolutePath(CommandLine.arguments.first!, relativeTo:currentWorkingDirectory).basename
-        print("\(cmd): error:", error, to: &stderr)
-    }
+func print(error: Any) {
+    let writer = InteractiveWriter.stderr
+    writer.write("error: ", inColor: .red, bold: true)
+    writer.write("\(error)")
+    writer.write("\n")
 }
 
 private func print(fix: String) {
-    if ColorWrap.isAllowed(for: .stdErr) {
-        print(ColorWrap.wrap("fix:", with: .Yellow, for: .stdErr), fix, to: &stderr)
-    } else {
-        print("fix:", fix, to: &stderr)
+    let writer = InteractiveWriter.stderr
+    writer.write("fix: ", inColor: .yellow, bold: true)
+    writer.write(fix)
+    writer.write("\n")
+}
+
+func print(diagnostic: Diagnostic) {
+    let writer = InteractiveWriter.stderr
+
+    switch diagnostic.behavior {
+    case .error:
+        writer.write("error: ", inColor: .red, bold: true)
+    case .warning:
+        writer.write("warning: ", inColor: .yellow, bold: true)
+    case .note:
+        writer.write("note: ", inColor: .white, bold: true)
+    case .ignored:
+        return
+    }
+
+    writer.write(diagnostic.localizedDescription)
+    writer.write("\n")
+    if let fixit = fixit(for: diagnostic) {
+        writer.write("fix: ", inColor: .yellow, bold: true)
+        writer.write(fixit)
+        writer.write("\n")
+    }
+}
+
+/// This class is used to write on the underlying stream.
+///
+/// If underlying stream is a not tty, the string will be written in without any
+/// formatting.
+private final class InteractiveWriter {
+
+    /// The standard error writer.
+    static let stderr = InteractiveWriter(stream: stderrStream)
+
+    /// The terminal controller, if present.
+    let term: TerminalController?
+
+    /// The output byte stream reference.
+    let stream: OutputByteStream
+
+    /// Create an instance with the given stream.
+    init(stream: OutputByteStream) {
+        self.term = (stream as? LocalFileOutputByteStream).flatMap(TerminalController.init(stream:))
+        self.stream = stream
+    }
+
+    /// Write the string to the contained terminal or stream.
+    func write(_ string: String, inColor color: TerminalController.Color = .noColor, bold: Bool = false) {
+        if let term = term {
+            term.write(string, inColor: color, bold: bold)
+        } else {
+            stream <<< string
+            stream.flush()
+        }
+    }
+}
+
+/// Returns the fixit for a diagnostic.
+fileprivate func fixit(for diagnostic: Diagnostic) -> String? {
+    switch diagnostic.data {
+    case let anyDiagnostic as AnyDiagnostic:
+        return fixit(for: anyDiagnostic.anyError)
+    default:
+        return nil
+    }
+}
+
+/// Returns the fixit for an error.
+fileprivate func fixit(for error: Swift.Error) -> String? {
+    switch error{
+    case ToolsVersionLoader.Error.malformed:
+        return "Run 'swift package tools-version --set-current' to set the current tools version in use"
+    default:
+        return nil
     }
 }

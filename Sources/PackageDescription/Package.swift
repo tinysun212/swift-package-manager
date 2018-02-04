@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -46,33 +46,45 @@ public final class Package {
             return Dependency(url, version...version)
         }
     }
-    
+
     /// The name of the package.
     public let name: String
-  
+
     /// pkgconfig name to use for C Modules. If present, swiftpm will try to search for
-    /// <name>.pc file to get the additional flags needed for the system module.
+    /// <name>.pc file to get the additional flags needed for the system target.
     public let pkgConfig: String?
-    
-    /// Providers array for System module
+
+    /// Providers array for System target
     public let providers: [SystemPackageProvider]?
-  
+
     /// The list of targets.
     public var targets: [Target]
 
     /// The list of dependencies.
     public var dependencies: [Dependency]
 
+    /// The list of swift versions, this package is compatible with.
+    public var swiftLanguageVersions: [Int]?
+
     /// The list of folders to exclude.
     public var exclude: [String]
 
     /// Construct a package.
-    public init(name: String, pkgConfig: String? = nil, providers: [SystemPackageProvider]? = nil, targets: [Target] = [], dependencies: [Dependency] = [], exclude: [String] = []) {
+    public init(
+        name: String,
+        pkgConfig: String? = nil,
+        providers: [SystemPackageProvider]? = nil,
+        targets: [Target] = [],
+        dependencies: [Dependency] = [],
+        swiftLanguageVersions: [Int]? = nil,
+        exclude: [String] = []
+    ) {
         self.name = name
         self.pkgConfig = pkgConfig
         self.providers = providers
         self.targets = targets
         self.dependencies = dependencies
+        self.swiftLanguageVersions = swiftLanguageVersions
         self.exclude = exclude
 
         // Add custom exit handler to cause package to be dumped at exit, if requested.
@@ -110,16 +122,18 @@ extension SystemPackageProvider {
 }
 
 // MARK: Equatable
-extension Package : Equatable { }
-public func ==(lhs: Package, rhs: Package) -> Bool {
-    return (lhs.name == rhs.name &&
-        lhs.targets == rhs.targets &&
-        lhs.dependencies == rhs.dependencies)
+extension Package : Equatable {
+    public static func == (lhs: Package, rhs: Package) -> Bool {
+        return (lhs.name == rhs.name &&
+            lhs.targets == rhs.targets &&
+            lhs.dependencies == rhs.dependencies)
+    }
 }
 
-extension Package.Dependency : Equatable { }
-public func ==(lhs: Package.Dependency, rhs: Package.Dependency) -> Bool {
-    return lhs.url == rhs.url && lhs.versionRange == rhs.versionRange
+extension Package.Dependency : Equatable {
+    public static func == (lhs: Package.Dependency, rhs: Package.Dependency) -> Bool {
+        return lhs.url == rhs.url && lhs.versionRange == rhs.versionRange
+    }
 }
 
 // MARK: Package JSON serialization
@@ -128,7 +142,7 @@ extension SystemPackageProvider {
     func toJSON() -> JSON {
         let (name, value) = nameValue
         return .dictionary(["name": .string(name),
-            "value": .string(value)
+            "value": .string(value),
         ])
     }
 }
@@ -139,8 +153,8 @@ extension Package.Dependency {
             "url": .string(url),
             "version": .dictionary([
                 "lowerBound": .string(versionRange.lowerBound.description),
-                "upperBound": .string(versionRange.upperBound.description)
-            ])
+                "upperBound": .string(versionRange.upperBound.description),
+            ]),
         ])
     }
 }
@@ -152,11 +166,14 @@ extension Package {
         if let pkgConfig = self.pkgConfig {
             dict["pkgConfig"] = .string(pkgConfig)
         }
-        dict["dependencies"] = .array(dependencies.map { $0.toJSON() })
-        dict["exclude"] = .array(exclude.map { .string($0) })
-        dict["targets"] = .array(targets.map { $0.toJSON() })
+        dict["dependencies"] = .array(dependencies.map({ $0.toJSON() }))
+        dict["exclude"] = .array(exclude.map({ .string($0) }))
+        dict["targets"] = .array(targets.map({ $0.toJSON() }))
         if let providers = self.providers {
-            dict["providers"] = .array(providers.map { $0.toJSON() })
+            dict["providers"] = .array(providers.map({ $0.toJSON() }))
+        }
+        if let swiftLanguageVersions = self.swiftLanguageVersions {
+            dict["swiftLanguageVersions"] = .array(swiftLanguageVersions.map(JSON.int))
         }
         return .dictionary(dict)
     }
@@ -166,7 +183,7 @@ extension Target {
     func toJSON() -> JSON {
         return .dictionary([
             "name": .string(name),
-            "dependencies": .array(dependencies.map { $0.toJSON() })
+            "dependencies": .array(dependencies.map({ $0.toJSON() })),
         ])
     }
 }
@@ -177,16 +194,6 @@ extension Target.Dependency {
         case .Target(let name):
             return .string(name)
         }
-    }
-}
-
-extension Product {
-    func toJSON() -> JSON {
-        var dict: [String: JSON] = [:]
-        dict["name"] = .string(name)
-        dict["type"] = .string(type.description)
-        dict["modules"] = .array(modules.map(JSON.string))
-        return .dictionary(dict)
     }
 }
 
@@ -212,20 +219,20 @@ struct Errors {
 func manifestToJSON(_ package: Package) -> String {
     var dict: [String: JSON] = [:]
     dict["package"] = package.toJSON()
-    dict["products"] = .array(products.map { $0.toJSON() })
+    dict["products"] = .array(products.map({ $0.toJSON() }))
     dict["errors"] = errors.toJSON()
     return JSON.dictionary(dict).toString()
 }
 
-// FIXME: This function is public to let other modules get the JSON representation
-// of the package without exposing the enum JSON defined in this module (because that'll
+// FIXME: This function is public to let other targets get the JSON representation
+// of the package without exposing the enum JSON defined in this target (because that'll
 // leak to clients of PackageDescription i.e every Package.swift file).
 public func jsonString(package: Package) -> String {
     return package.toJSON().toString()
 }
 
 var errors = Errors()
-private var dumpInfo: (package: Package, fileNo: Int32)? = nil
+private var dumpInfo: (package: Package, fileNo: Int32)?
 private func dumpPackageAtExit(_ package: Package, fileNo: Int32) {
     func dump() {
         guard let dumpInfo = dumpInfo else { return }

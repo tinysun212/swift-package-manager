@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -52,9 +52,53 @@ class JSONTests: XCTestCase {
         XCTAssertEqual(json, .dictionary(["name": .string("jon doe")]))
     }
 
+    func testPrettyPrinting() {
+        let c1 = JSON.dictionary([
+            "name": .string("child1"),
+            "age": .int(2),
+        ])
+
+        let c2 = JSON.dictionary([
+            "name": .string("child2"),
+            "age": .int(3),
+        ])
+
+        let person = JSON.dictionary([
+            "first": .string("john"),
+            "last": .string("doe"),
+            "age": .int(22),
+            "children": .array([c1, c2]),
+            "houses": .array([1, 2].map(JSON.int)),
+        ])
+
+        let str = 
+            "{"                           + "\n" +
+            "  \"age\": 22,"              + "\n" +
+            "  \"children\": ["           + "\n" +
+            "    {"                       + "\n" +
+            "      \"age\": 2,"           + "\n" +
+            "      \"name\": \"child1\""  + "\n" +
+            "    },"                      + "\n" +
+            "    {"                       + "\n" +
+            "      \"age\": 3,"           + "\n" +
+            "      \"name\": \"child2\""  + "\n" +
+            "    }"                       + "\n" +
+            "  ],"                        + "\n" +
+            "  \"first\": \"john\","      + "\n" +
+            "  \"houses\": ["             + "\n" +
+            "    1,"                      + "\n" +
+            "    2"                       + "\n" +
+            "  ],"                        + "\n" +
+            "  \"last\": \"doe\""         + "\n" +
+            "}"                           + "\n"
+
+        XCTAssertEqual(person.toString(prettyPrint: true), str)
+    }
+
     static var allTests = [
         ("testEncoding", testEncoding),
         ("testDecoding", testDecoding),
         ("testStringInitalizer", testStringInitalizer),
+        ("testPrettyPrinting", testPrettyPrinting),
     ]
 }

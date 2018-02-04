@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -53,9 +53,26 @@ class GitRepositoryTests: XCTestCase {
 
             let revision = try repository.resolveRevision(tag: tags.first ?? "<invalid>")
             // FIXME: It would be nice if we had a deterministic hash here...
-            XCTAssertEqual(revision.identifier, try Git.runPopen([Git.tool, "-C", testRepoPath.asString, "rev-parse", "--verify", "1.2.3"]).chomp())
+            XCTAssertEqual(revision.identifier, 
+                try Process.popen(
+                    args: Git.tool, "-C", testRepoPath.asString, "rev-parse", "--verify", "1.2.3").utf8Output().chomp())
             if let revision = try? repository.resolveRevision(tag: "<invalid>") {
                 XCTFail("unexpected resolution of invalid tag to \(revision)")
+            }
+
+            let master = try repository.resolveRevision(identifier: "master")
+
+            XCTAssertEqual(master.identifier,
+                try Process.checkNonZeroExit(
+                    args: Git.tool, "-C", testRepoPath.asString, "rev-parse", "--verify", "master").chomp())
+
+            // Check that git hashes resolve to themselves.
+            let masterIdentifier = try repository.resolveRevision(identifier: master.identifier)
+            XCTAssertEqual(master.identifier, masterIdentifier.identifier)
+
+            // Check that invalid identifier doesn't resolve.
+            if let revision = try? repository.resolveRevision(identifier: "invalid") {
+                XCTFail("unexpected resolution of invalid identifier to \(revision)")
             }
         }
     }
@@ -125,6 +142,26 @@ class GitRepositoryTests: XCTestCase {
        }
     }
 
+    func testSubmoduleRead() throws {
+        mktmpdir { path in
+            let testRepoPath = path.appending(component: "test-repo")
+            try makeDirectories(testRepoPath)
+            initGitRepo(testRepoPath)
+
+            let repoPath = path.appending(component: "repo")
+            try makeDirectories(repoPath)
+            initGitRepo(repoPath)
+
+            try Process.checkNonZeroExit(
+                args: Git.tool, "-C", repoPath.asString, "submodule", "add", testRepoPath.asString)
+            let repo = GitRepository(path: repoPath)
+            try repo.stageEverything()
+            try repo.commit()
+            // We should be able to read a repo which as a submdoule.
+            _ = try repo.read(tree: try repo.resolveHash(treeish: "master"))
+        }
+    }
+
     /// Test the Git file system view.
     func testGitFileView() throws {
         mktmpdir { path in
@@ -132,14 +169,17 @@ class GitRepositoryTests: XCTestCase {
             try makeDirectories(testRepoPath)
             initGitRepo(testRepoPath)
 
-            // Add a couple files and a directory.
+            // Add a few files and a directory.
             let test1FileContents: ByteString = "Hello, world!"
             let test2FileContents: ByteString = "Hello, happy world!"
+            let test3FileContents: ByteString = "#!/bin/sh\nset -e\nexit 0\n"
             try localFileSystem.writeFileContents(testRepoPath.appending(component: "test-file-1.txt"), bytes: test1FileContents)
             try localFileSystem.createDirectory(testRepoPath.appending(component: "subdir"))
             try localFileSystem.writeFileContents(testRepoPath.appending(components: "subdir", "test-file-2.txt"), bytes: test2FileContents)
+            try localFileSystem.writeFileContents(testRepoPath.appending(component: "test-file-3.sh"), bytes: test3FileContents)
+            try! Process.checkNonZeroExit(args: "chmod", "+x", testRepoPath.appending(component: "test-file-3.sh").asString)
             let testRepo = GitRepository(path: testRepoPath)
-            try testRepo.stage(files: "test-file-1.txt", "subdir/test-file-2.txt")
+            try testRepo.stage(files: "test-file-1.txt", "subdir/test-file-2.txt", "test-file-3.sh")
             try testRepo.commit()
             try testRepo.tag(name: "test-tag")
 
@@ -161,9 +201,11 @@ class GitRepositoryTests: XCTestCase {
             XCTAssert(!view.exists(AbsolutePath("/does-not-exist")))
             XCTAssert(view.isFile(AbsolutePath("/test-file-1.txt")))
             XCTAssert(!view.isSymlink(AbsolutePath("/test-file-1.txt")))
+            XCTAssert(!view.isExecutableFile(AbsolutePath("/does-not-exist")))
+            XCTAssert(view.isExecutableFile(AbsolutePath("/test-file-3.sh")))
 
             // Check read of a directory.
-            XCTAssertEqual(try view.getDirectoryContents(AbsolutePath("/")).sorted(), ["file.swift", "subdir", "test-file-1.txt"])
+            XCTAssertEqual(try view.getDirectoryContents(AbsolutePath("/")).sorted(), ["file.swift", "subdir", "test-file-1.txt", "test-file-3.sh"])
             XCTAssertEqual(try view.getDirectoryContents(AbsolutePath("/subdir")).sorted(), ["test-file-2.txt"])
             XCTAssertThrows(FileSystemError.isDirectory) {
                 _ = try view.readFileContents(AbsolutePath("/subdir"))
@@ -203,7 +245,7 @@ class GitRepositoryTests: XCTestCase {
             let testRepoPath = path.appending(component: "test-repo")
             try makeDirectories(testRepoPath)
             initGitRepo(testRepoPath, tag: "initial")
-            let initialRevision = Git.Repo(path: testRepoPath)!.sha
+            let initialRevision = try GitRepository(path: testRepoPath).getCurrentRevision()
 
             // Add a couple files and a directory.
             try localFileSystem.writeFileContents(testRepoPath.appending(component: "test.txt"), bytes: "Hi")
@@ -211,7 +253,7 @@ class GitRepositoryTests: XCTestCase {
             try testRepo.stage(file: "test.txt")
             try testRepo.commit()
             try testRepo.tag(name: "test-tag")
-            let currentRevision = Git.Repo(path: testRepoPath)!.sha
+            let currentRevision = try GitRepository(path: testRepoPath).getCurrentRevision()
 
             // Fetch the repository using the provider.
             let testClonePath = path.appending(component: "clone")
@@ -234,10 +276,10 @@ class GitRepositoryTests: XCTestCase {
             for path in [checkoutPath, editsPath] {
                 let workingCopy = try provider.openCheckout(at: path)
                 try workingCopy.checkout(tag: "test-tag")
-                XCTAssertEqual(try workingCopy.getCurrentRevision().identifier, currentRevision)
+                XCTAssertEqual(try workingCopy.getCurrentRevision(), currentRevision)
                 XCTAssert(localFileSystem.exists(path.appending(component: "test.txt")))
                 try workingCopy.checkout(tag: "initial")
-                XCTAssertEqual(try workingCopy.getCurrentRevision().identifier, initialRevision)
+                XCTAssertEqual(try workingCopy.getCurrentRevision(), initialRevision)
                 XCTAssert(!localFileSystem.exists(path.appending(component: "test.txt")))
             }
         }
@@ -320,7 +362,7 @@ class GitRepositoryTests: XCTestCase {
         }
     }
 
-    func testRemotes() {
+    func testSetRemote() {
         mktmpdir { path in
             // Create a repo.
             let testRepoPath = path.appending(component: "test-repo")
@@ -334,31 +376,15 @@ class GitRepositoryTests: XCTestCase {
             // Add a remote via git cli.
             try systemQuietly([Git.tool, "-C", testRepoPath.asString, "remote", "add", "origin", "../foo"])
             // Test if it was added.
-            XCTAssertEqual(Dictionary(items: try repo.remotes().map { ($0, $1) }), ["origin": "../foo"])
-
-            // Remove the remote via cli.
-            try systemQuietly([Git.tool, "-C", testRepoPath.asString, "remote", "remove", "origin"])
-            // Test if it was removed.
-            XCTAssert(try repo.remotes().isEmpty)
-
-            // Add a remote.
-            try repo.add(remote: "origin", url: "../foo")
-            // Check it was added.
-            let remote = Dictionary(items: try repo.remotes().map { ($0, $1) })
-            XCTAssertEqual(remote, ["origin": "../foo"])
-
-            // Add another remote.
-            try repo.add(remote: "origin2", url: "../bar")
-            // Check that there are two remotes now.
-            let remotes = Dictionary(items: try repo.remotes().map { ($0, $1)})
-            XCTAssertEqual(remotes, ["origin": "../foo", "origin2": "../bar"])
-
-            // Remove the remotes.
-            try repo.remove(remote: "origin")
-            try repo.remove(remote: "origin2")
-
-            // All remotes should be removed now.
-            XCTAssert(try repo.remotes().isEmpty)
+            XCTAssertEqual(Dictionary(items: try repo.remotes().map { ($0.0, $0.1) }), ["origin": "../foo"])
+            // Change remote.
+            try repo.setURL(remote: "origin", url: "../bar")
+            XCTAssertEqual(Dictionary(items: try repo.remotes().map { ($0.0, $0.1) }), ["origin": "../bar"])
+            // Try changing remote of non-existant remote.
+            do {
+                try repo.setURL(remote: "fake", url: "../bar")
+                XCTFail("unexpected success")
+            } catch ProcessResult.Error.nonZeroExit {}
         }
     }
 
@@ -456,17 +482,101 @@ class GitRepositoryTests: XCTestCase {
         }
     }
 
+    func testSubmodules() throws {
+        mktmpdir { path in
+            let provider = GitRepositoryProvider()
+
+            // Create repos: foo and bar, foo will have bar as submodule and then later
+            // the submodule ref will be updated in foo.
+            let fooPath = path.appending(component: "foo-original")
+            let fooSpecifier = RepositorySpecifier(url: fooPath.asString)
+            let fooRepoPath = path.appending(component: "foo-repo")
+            let fooWorkingPath = path.appending(component: "foo-working")
+            let barPath = path.appending(component: "bar-original")
+            let bazPath = path.appending(component: "baz-original")
+            // Create the repos and add a file.
+            for path in [fooPath, barPath, bazPath] {
+                try makeDirectories(path)
+                initGitRepo(path)
+                try localFileSystem.writeFileContents(path.appending(component: "hello.txt"), bytes: "hello")
+                let repo = GitRepository(path: path)
+                try repo.stageEverything()
+                try repo.commit()
+            }
+            let foo = GitRepository(path: fooPath)
+            let bar = GitRepository(path: barPath)
+            // The tag 1.0.0 does not contain the submodule. 
+            try foo.tag(name: "1.0.0")
+
+            // Fetch and clone repo foo.
+            try provider.fetch(repository: fooSpecifier, to: fooRepoPath)
+            try provider.cloneCheckout(repository: fooSpecifier, at: fooRepoPath, to: fooWorkingPath, editable: false)
+
+            let fooRepo = GitRepository(path: fooRepoPath, isWorkingRepo: false)
+            let fooWorkingRepo = GitRepository(path: fooWorkingPath)
+
+            // Checkout the first tag which doesn't has submodule.
+            try fooWorkingRepo.checkout(tag: "1.0.0")
+            XCTAssertFalse(exists(fooWorkingPath.appending(component: "bar")))
+
+            // Add submodule to foo and tag it as 1.0.1
+            try foo.checkout(newBranch: "submodule")
+            try systemQuietly([Git.tool, "-C", fooPath.asString, "submodule", "add", barPath.asString, "bar"])
+            try foo.stageEverything()
+            try foo.commit()
+            try foo.tag(name: "1.0.1")
+
+            // Update our bare and working repos.
+            try fooRepo.fetch()
+            try fooWorkingRepo.fetch()
+            // Checkout the tag with submodule and expect submodules files to be present.
+            try fooWorkingRepo.checkout(tag: "1.0.1")
+            XCTAssertTrue(exists(fooWorkingPath.appending(components: "bar", "hello.txt")))
+            // Checkout the tag without submodule and ensure that the submodule files are gone.
+            try fooWorkingRepo.checkout(tag: "1.0.0")
+            XCTAssertFalse(exists(fooWorkingPath.appending(components: "bar")))
+
+            // Add something to bar.
+            try localFileSystem.writeFileContents(barPath.appending(component: "bar.txt"), bytes: "hello")
+            // Add a submodule too to check for recusive submodules.
+            try systemQuietly([Git.tool, "-C", barPath.asString, "submodule", "add", bazPath.asString, "baz"])
+            try bar.stageEverything()
+            try bar.commit()
+
+            // Update the ref of bar in foo and tag as 1.0.2
+            try systemQuietly([Git.tool, "-C", fooPath.appending(component: "bar").asString, "pull"])
+            try foo.stageEverything()
+            try foo.commit()
+            try foo.tag(name: "1.0.2")
+
+            try fooRepo.fetch()
+            try fooWorkingRepo.fetch()
+            // We should see the new file we added in the submodule.
+            try fooWorkingRepo.checkout(tag: "1.0.2")
+            XCTAssertTrue(exists(fooWorkingPath.appending(components: "bar", "hello.txt")))
+            XCTAssertTrue(exists(fooWorkingPath.appending(components: "bar", "bar.txt")))
+            XCTAssertTrue(exists(fooWorkingPath.appending(components: "bar", "baz", "hello.txt")))
+
+            // Sanity check.
+            try fooWorkingRepo.checkout(tag: "1.0.0")
+            XCTAssertFalse(exists(fooWorkingPath.appending(components: "bar")))
+        }
+    }
+
     static var allTests = [
         ("testBranchOperations", testBranchOperations),
-        ("testFetch", testFetch),
-        ("testRepositorySpecifier", testRepositorySpecifier),
-        ("testProvider", testProvider),
-        ("testGitRepositoryHash", testGitRepositoryHash),
-        ("testRawRepository", testRawRepository),
-        ("testRemotes", testRemotes),
-        ("testGitFileView", testGitFileView),
+        ("testCheckoutRevision", testCheckoutRevision),
         ("testCheckouts", testCheckouts),
+        ("testFetch", testFetch),
+        ("testGitFileView", testGitFileView),
+        ("testGitRepositoryHash", testGitRepositoryHash),
         ("testHasUnpushedCommits", testHasUnpushedCommits),
+        ("testProvider", testProvider),
+        ("testRawRepository", testRawRepository),
+        ("testRepositorySpecifier", testRepositorySpecifier),
+        ("testSetRemote", testSetRemote),
+        ("testSubmoduleRead", testSubmoduleRead),
+        ("testSubmodules", testSubmodules),
         ("testUncommitedChanges", testUncommitedChanges),
     ]
 }

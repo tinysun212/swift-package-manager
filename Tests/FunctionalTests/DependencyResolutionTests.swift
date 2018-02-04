@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -12,8 +12,6 @@ import XCTest
 
 import Basic
 
-import func POSIX.popen
-
 import TestSupport
 import SourceControl
 
@@ -22,7 +20,7 @@ class DependencyResolutionTests: XCTestCase {
         fixture(name: "DependencyResolution/Internal/Simple") { prefix in
             XCTAssertBuilds(prefix)
 
-            let output = try popen([prefix.appending(components: ".build", "debug", "Foo").asString])
+            let output = try Process.checkNonZeroExit(args: prefix.appending(components: ".build", "debug", "Foo").asString)
             XCTAssertEqual(output, "Foo\nBar\n")
         }
     }
@@ -37,18 +35,17 @@ class DependencyResolutionTests: XCTestCase {
         fixture(name: "DependencyResolution/Internal/Complex") { prefix in
             XCTAssertBuilds(prefix)
 
-            let output = try popen([prefix.appending(components: ".build", "debug", "Foo").asString])
+            let output = try Process.checkNonZeroExit(args: prefix.appending(components: ".build", "debug", "Foo").asString)
             XCTAssertEqual(output, "meiow Baz\n")
         }
     }
 
     /// Check resolution of a trivial package with one dependency.
     func testExternalSimple() {
-        // This will tag 'Foo' with 1.0.0, to start.
-        fixture(name: "DependencyResolution/External/Simple", tags: ["1.0.0"]) { prefix in
+        fixture(name: "DependencyResolution/External/Simple") { prefix in
             // Add several other tags to check version selection.
             let repo = GitRepository(path: prefix.appending(components: "Foo"))
-            for tag in ["1.1.0", "1.2.0", "1.2.3"] {
+            for tag in ["1.1.0", "1.2.0"] {
                 try repo.tag(name: tag)
             }
 
@@ -60,16 +57,10 @@ class DependencyResolutionTests: XCTestCase {
         }
     }
 
-    func testExternalDuplicateModule() {
-        fixture(name: "DependencyResolution/External/DuplicateModules") { prefix in
-            XCTAssertBuildFails(prefix)
-        }
-    }
-
     func testExternalComplex() {
         fixture(name: "DependencyResolution/External/Complex") { prefix in
             XCTAssertBuilds(prefix.appending(component: "app"))
-            let output = try POSIX.popen([prefix.appending(components: "app", ".build", "debug", "Dealer").asString])
+            let output = try Process.checkNonZeroExit(args: prefix.appending(components: "app", ".build", "debug", "Dealer").asString)
             XCTAssertEqual(output, "♣︎K\n♣︎Q\n♣︎J\n♣︎10\n♣︎9\n♣︎8\n♣︎7\n♣︎6\n♣︎5\n♣︎4\n")
         }
     }
@@ -85,7 +76,6 @@ class DependencyResolutionTests: XCTestCase {
         ("testInternalExecAsDep", testInternalExecAsDep),
         ("testInternalComplex", testInternalComplex),
         ("testExternalSimple", testExternalSimple),
-        ("testExternalDuplicateModule", testExternalDuplicateModule),
         ("testExternalComplex", testExternalComplex),
         ("testIndirectTestsDontBuild", testIndirectTestsDontBuild),
     ]

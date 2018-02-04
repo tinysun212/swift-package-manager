@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -10,17 +10,24 @@
 
 import Basic
 import Build
-import Get
-import PackageLoading
 import PackageModel
+import PackageLoading
+import PackageGraph
 import SourceControl
 import Utility
 import Xcodeproj
+import Workspace
 
-import enum Build.Configuration
-import protocol Build.Toolchain
-import func POSIX.exit
-import func POSIX.chdir
+struct FetchDeprecatedDiagnostic: DiagnosticData {
+    static let id = DiagnosticID(
+        type: AnyDiagnostic.self,
+        name: "org.swift.diags.fetch-deprecated",
+        defaultBehavior: .warning,
+        description: {
+            $0 <<< "'fetch' command is deprecated, use 'resolve' command instead."
+        }
+    )
+}
 
 /// Errors encountered duing the package tool operations.
 enum PackageToolOperationError: Swift.Error {
@@ -29,266 +36,130 @@ enum PackageToolOperationError: Swift.Error {
 
     /// The current mode does not have all the options it requires.
     case insufficientOptions(usage: String)
+
+    /// The package is in editable state.
+    case packageInEditableState
 }
 
-public enum PackageMode: Argument, Equatable, CustomStringConvertible {
-    case dumpPackage
-    case edit
-    case unedit
-    case fetch
-    case generateXcodeproj
-    case initPackage
-    case showDependencies
-    case reset
-    case resolve
-    case update
-    case usage
-    case version
+/// swift-package tool namespace
+public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
 
-    public init?(argument: String, pop: @escaping () -> String?) throws {
-        switch argument {
-        case "dump-package":
-            self = .dumpPackage
-        case "edit":
-            self = .edit
-        case "unedit":
-            self = .unedit
-        case "fetch":
-            self = .fetch
-        case "generate-xcodeproj":
-            self = .generateXcodeproj
-        case "init":
-            self = .initPackage
-        case "reset":
-            self = .reset
-        case "resolve":
-            self = .resolve
-        case "show-dependencies":
-            self = .showDependencies
-        case "update":
-            self = .update
-        case "--help", "-h":
-            self = .usage
-        case "--version":
-            self = .version
-        default:
-            return nil
-        }
+   public convenience init(args: [String]) {
+       self.init(
+            toolName: "package",
+            usage: "[options] subcommand",
+            overview: "Perform operations on Swift packages",
+            args: args
+        )
     }
-
-    public var description: String {
-        switch self {
-        case .dumpPackage: return "dump-package"
-        case .edit: return "edit"
-        case .unedit: return "unedit"
-        case .fetch: return "fetch"
-        case .generateXcodeproj: return "generate-xcodeproj"
-        case .initPackage: return "initPackage"
-        case .reset: return "reset"
-        case .resolve: return "resolve"
-        case .showDependencies: return "show-dependencies"
-        case .update: return "update"
-        case .usage: return "--help"
-        case .version: return "--version"
-        }
-    }
-}
-
-private enum PackageToolFlag: Argument {
-    case initMode(String)
-    case showDepsMode(String)
-    case enableCodeCoverage
-    case inputPath(AbsolutePath)
-    case outputPath(AbsolutePath)
-    case chdir(AbsolutePath)
-    case colorMode(ColorWrap.Mode)
-    case xcc(String)
-    case xld(String)
-    case xswiftc(String)
-    case buildPath(AbsolutePath)
-    case enableNewResolver
-    case xcconfigOverrides(AbsolutePath)
-    case verbose(Int)
-    case packageName(String)
-    case editRevision(String)
-    case editCheckoutBranch(String)
-    case editForceRemove
-
-    init?(argument: String, pop: @escaping () -> String?) throws {
-
-        func forcePop() throws -> String {
-            guard let value = pop() else { throw OptionParserError.expectedAssociatedValue(argument) }
-            return value
-        }
-
-        switch argument {
-        case Flag.chdir, Flag.C:
-            self = try .chdir(AbsolutePath(forcePop(), relativeTo: currentWorkingDirectory))
-        case "--type":
-            self = try .initMode(forcePop())
-        case "--enable-code-coverage":
-            self = .enableCodeCoverage
-        case "--format":
-            self = try .showDepsMode(forcePop())
-        case "--output":
-            self = try .outputPath(AbsolutePath(forcePop(), relativeTo: currentWorkingDirectory))
-        case "--input":
-            self = try .inputPath(AbsolutePath(forcePop(), relativeTo: currentWorkingDirectory))
-        case "--verbose", "-v":
-            self = .verbose(1)
-        case "--color":
-            let rawValue = try forcePop()
-            guard let mode = ColorWrap.Mode(rawValue) else  {
-                throw OptionParserError.invalidUsage("invalid color mode: \(rawValue)")
-            }
-            self = .colorMode(mode)
-        case "-Xcc":
-            self = try .xcc(forcePop())
-        case "-Xlinker":
-            self = try .xld(forcePop())
-        case "-Xswiftc":
-            self = try .xswiftc(forcePop())
-        case "--build-path":
-            self = try .buildPath(AbsolutePath(forcePop(), relativeTo: currentWorkingDirectory))
-        case "--enable-new-resolver":
-            self = .enableNewResolver
-        case "--xcconfig-overrides":
-            self = try .xcconfigOverrides(AbsolutePath(forcePop(), relativeTo: currentWorkingDirectory))
-        case "--name":
-            self = try .packageName(forcePop())
-        case "--revision":
-            self = try .editRevision(forcePop())
-        case "--branch", "-b":
-            self = try .editCheckoutBranch(forcePop())
-        case "--force", "-f":
-            self = .editForceRemove
-        default:
-            return nil
-        }
-    }
-}
-
-public class PackageToolOptions: Options {
-    var initMode: InitMode = InitMode.library
-    var showDepsMode: ShowDependenciesMode = ShowDependenciesMode.text
-    var packageName: String? = nil
-    var editRevision: String? = nil
-    var editCheckoutBranch: String? = nil
-    var editForceRemove = false
-    var inputPath: AbsolutePath? = nil
-    var outputPath: AbsolutePath? = nil
-    var xcodeprojOptions = XcodeprojOptions()
-}
-
-/// swift-build tool namespace
-public class SwiftPackageTool: SwiftTool<PackageMode, PackageToolOptions> {
-
     override func runImpl() throws {
-        switch mode {
-        case .usage:
-            SwiftPackageTool.usage()
-
+        switch options.mode {
         case .version:
             print(Versioning.currentVersion.completeDisplayString)
 
         case .initPackage:
-            let initPackage = try InitPackage(mode: options.initMode)
+            let initPackage = try InitPackage(destinationPath: currentWorkingDirectory, packageType: options.initMode)
+            initPackage.progressReporter = { message in
+                print(message)
+            }
             try initPackage.writePackageStructure()
 
-        case .reset:
-            if options.enableNewResolver {
-                try getActiveWorkspace().reset()
-            } else {
-                // Remove the checkouts directory.
-                if try exists(getCheckoutsDirectory()) {
-                    try removeFileTree(getCheckoutsDirectory())
-                }
-                // Remove the build directory.
-                if exists(buildPath) {
-                    try removeFileTree(buildPath)
-                }
-            }
+        case .clean:
+            try getActiveWorkspace().clean(with: diagnostics)
 
-        case .resolve:
-            // NOTE: This command is currently undocumented, and is for
-            // bringup of the new dependency resolution logic. This is *NOT*
-            // the code currently used to resolve dependencies (which runs
-            // off of the infrastructure in the `Get` module).
+        case .reset:
+            try getActiveWorkspace().reset(with: diagnostics)
+
+        case .resolveTool:
             try executeResolve(options)
-            break
 
         case .update:
-            if options.enableNewResolver {
-                let workspace = try getActiveWorkspace()
-                try workspace.updateDependencies()
-            } else {
-                let packagesDirectory = try getCheckoutsDirectory()
-                // Attempt to ensure that none of the repositories are modified.
-                if localFileSystem.exists(packagesDirectory) {
-                    for name in try localFileSystem.getDirectoryContents(packagesDirectory) {
-                        let item = packagesDirectory.appending(RelativePath(name))
+            let workspace = try getActiveWorkspace()
+            try workspace.updateDependencies(
+                root: getWorkspaceRoot(),
+                diagnostics: diagnostics
+            )
 
-                        // Only look at repositories.
-                        guard exists(item.appending(component: ".git")) else { continue }
-
-                        // If there is a staged or unstaged diff, don't remove the
-                        // tree. This won't detect new untracked files, but it is
-                        // just a safety measure for now.
-                        let diffArgs = ["--no-ext-diff", "--quiet", "--exit-code"]
-                        do {
-                            _ = try Git.runPopen([Git.tool, "-C", item.asString, "diff"] + diffArgs)
-                            _ = try Git.runPopen([Git.tool, "-C", item.asString, "diff", "--cached"] + diffArgs)
-                        } catch {
-                            throw Error.repositoryHasChanges(item.asString)
-                        }
-                    }
-                    try removeFileTree(packagesDirectory)
-                }
-                _ = try loadPackage()
-            }
         case .fetch:
-            _ = try loadPackage()
+            diagnostics.emit(data: FetchDeprecatedDiagnostic())
+            try resolve()
+
+        case .resolve:
+            let resolveOptions = options.resolveOptions
+
+            // If a package is provided, use that to resolve the dependencies.
+            if let packageName = resolveOptions.packageName {
+                let workspace = try getActiveWorkspace()
+                return try workspace.resolve(
+                    packageName: packageName,
+                    root: getWorkspaceRoot(),
+                    version: resolveOptions.version.flatMap(Version.init(string:)),
+                    branch: resolveOptions.branch,
+                    revision: resolveOptions.revision,
+                    diagnostics: diagnostics)
+            }
+
+            // Otherwise, run a normal resolve.
+            try resolve()
 
         case .edit:
-            guard options.enableNewResolver else {
-                fatalError("This mode requires --enable-new-resolver")
-            }
-            // Make sure we have all the options required for editing the package.
-            guard let packageName = options.packageName, (options.editRevision != nil || options.editCheckoutBranch != nil) else {
-                throw PackageToolOperationError.insufficientOptions(usage: editUsage)
-            }
-            // Get the current workspace.
+            let packageName = options.editOptions.packageName!
+            try resolve()
             let workspace = try getActiveWorkspace()
-            let manifests = try workspace.loadDependencyManifests()
-            // Look for the package's manifest.
-            guard let (manifest, dependency) = manifests.lookup(package: packageName) else {
-                throw PackageToolOperationError.packageNotFound
-            }
+
             // Create revision object if provided by user.
-            let revision = options.editRevision.flatMap { Revision(identifier: $0) }
+            let revision = options.editOptions.revision.flatMap({ Revision(identifier: $0) })
+
             // Put the dependency in edit mode.
-            try workspace.edit(dependency: dependency, at: revision, packageName: manifest.name, checkoutBranch: options.editCheckoutBranch)
+            workspace.edit(
+                packageName: packageName,
+                path: options.editOptions.path,
+                revision: revision,
+                checkoutBranch: options.editOptions.checkoutBranch,
+                diagnostics: diagnostics)
 
         case .unedit:
-            guard options.enableNewResolver else {
-                fatalError("This mode requires --enable-new-resolver")
-            }
-            guard let packageName = options.packageName else {
-                throw PackageToolOperationError.insufficientOptions(usage: uneditUsage)
-            }
+            let packageName = options.editOptions.packageName!
+            try resolve()
             let workspace = try getActiveWorkspace()
-            let manifests = try workspace.loadDependencyManifests()
-            // Look for the package's manifest.
-            guard let editedDependency = manifests.lookup(package: packageName)?.dependency else {
-                throw PackageToolOperationError.packageNotFound
-            }
-            try workspace.unedit(dependency: editedDependency, forceRemove: options.editForceRemove)
+
+            try workspace.unedit(
+                packageName: packageName,
+                forceRemove: options.editOptions.shouldForceRemove,
+                root: getWorkspaceRoot(),
+                diagnostics: diagnostics
+            )
 
         case .showDependencies:
-            let graph = try loadPackage()
-            dumpDependenciesOf(rootPackage: graph.rootPackage, mode: options.showDepsMode)
+            let graph = try loadPackageGraph()
+            dumpDependenciesOf(rootPackage: graph.rootPackages[0], mode: options.showDepsMode)
+
+        case .toolsVersion:
+            let pkg = try getPackageRoot()
+
+            switch options.toolsVersionMode {
+            case .display:
+                let toolsVersionLoader = ToolsVersionLoader()
+                let version = try toolsVersionLoader.load(at: pkg, fileSystem: localFileSystem)
+                print("\(version)")
+
+            case .set(let value):
+                guard let toolsVersion = ToolsVersion(string: value) else {
+                    // FIXME: Probably lift this error defination to ToolsVersion.
+                    throw ToolsVersionLoader.Error.malformed(specifier: value, file: pkg)
+                }
+                try writeToolsVersion(at: pkg, version: toolsVersion, fs: &localFileSystem)
+
+            case .setCurrent:
+                // Write the tools version with current version but with patch set to zero.
+                // We do this to avoid adding unnecessary constraints to patch versions, if
+                // the package really needs it, they can do it using --set option.
+                try writeToolsVersion(
+                    at: pkg, version: ToolsVersion.currentToolsVersion.zeroedPatch, fs: &localFileSystem)
+            }
+
         case .generateXcodeproj:
-            let graph = try loadPackage()
+            let graph = try loadPackageGraph()
 
             let projectName: String
             let dstdir: AbsolutePath
@@ -300,127 +171,301 @@ public class SwiftPackageTool: SwiftTool<PackageMode, PackageToolOptions> {
                 dstdir = outpath.parentDirectory
             case let outpath?:
                 dstdir = outpath
-                projectName = graph.rootPackage.name
+                projectName = graph.rootPackages[0].name
             case _:
                 dstdir = try getPackageRoot()
-                projectName = graph.rootPackage.name
+                projectName = graph.rootPackages[0].name
             }
-            let outpath = try Xcodeproj.generate(outputDir: dstdir, projectName: projectName, graph: graph, options: options.xcodeprojOptions)
+            let outpath = try Xcodeproj.generate(
+                outputDir: dstdir,
+                projectName: projectName,
+                graph: graph,
+                options: options.xcodeprojOptions)
 
             print("generated:", outpath.prettyPath)
 
+        case .describe:
+            let graph = try loadPackageGraph()
+            describe(graph.rootPackages[0].underlyingPackage, in: options.describeMode, on: stdoutStream)
+
         case .dumpPackage:
-            let manifest = try loadRootManifest(options)
-            // FIXME: It would be nice if this has a pretty print option.
-            print(manifest.jsonString())
+            let graph = try loadPackageGraph()
+            let manifest = graph.rootPackages[0].manifest
+            print(try manifest.jsonString())
+
+        case .help:
+            parser.printUsage(on: stdoutStream)
         }
     }
 
-    /// Load the manifest for the root package
-    func loadRootManifest(_ options: PackageToolOptions) throws -> Manifest {
-        let root = try options.inputPath ?? getPackageRoot()
-        return try manifestLoader.loadFile(path: root, baseURL: root.asString, version: nil)
-    }
-    
-    override class func usage(_ print: (String) -> Void = { print($0) }) {
-        //     .........10.........20.........30.........40.........50.........60.........70..
-        print("OVERVIEW: Perform operations on Swift packages")
-        print("")
-        print("USAGE: swift package [command] [options]")
-        print("")
-        print("COMMANDS:")
-        print("  init [--type <type>]                   Initialize a new package")
-        print("      (type: empty|library|executable|system-module)")
-        print("  fetch                                  Fetch package dependencies")
-        print("  update                                 Update package dependencies")
-        print("  generate-xcodeproj [--output <path>]   Generates an Xcode project")
-        print("  show-dependencies [--format <format>]  Print the resolved dependency graph")
-        print("      (format: text|dot|json)")
-        print("  dump-package [--input <path>]          Print parsed Package.swift as JSON")
-        print("")
-        print("OPTIONS:")
-        print("  -C, --chdir <path>        Change working directory before any other operation")
-        print("  --build-path <path>       Specify build/cache directory [default: ./.build]")
-        print("  --color <mode>            Specify color mode (auto|always|never)")
-        print("  --enable-code-coverage    Enable code coverage in generated Xcode projects")
-        print("  -v, --verbose             Increase verbosity of informational output")
-        print("  --version                 Print the Swift Package Manager version")
-        print("  -Xcc <flag>               Pass flag through to all C compiler invocations")
-        print("  -Xlinker <flag>           Pass flag through to all linker invocations")
-        print("  -Xswiftc <flag>           Pass flag through to all Swift compiler invocations")
-        print("")
-        print("NOTE: Use `swift build` to build packages, and `swift test` to test packages")
-    }
+    override class func defineArguments(parser: ArgumentParser, binder: ArgumentBinder<PackageToolOptions>) {
+        let describeParser = parser.add(
+            subparser: PackageMode.describe.rawValue,
+            overview: "Describe the current package")
+        binder.bind(
+            option: describeParser.add(option: "--type", kind: DescribeMode.self, usage: "json|text"),
+            to: { $0.describeMode = $1 })
 
-    var editUsage: String {
-        let stream = BufferedOutputByteStream()
-        stream <<< "Expected package edit format:\n"
-        stream <<< "swift package edit --name <packageName> (--revision <revision> | --branch <newBranch>)\n"
-        stream <<< "Note: Either revision or branch name is required."
-        return stream.bytes.asString!
-    }
+        _ = parser.add(subparser: PackageMode.dumpPackage.rawValue, overview: "Print parsed Package.swift as JSON")
 
-    var uneditUsage: String {
-        let stream = BufferedOutputByteStream()
-        stream <<< "Expected package unedit format:\n"
-        stream <<< "swift package unedit --name <packageName> [--force]"
-        return stream.bytes.asString!
-    }
-    
-    override class func parse(commandLineArguments args: [String]) throws -> (PackageMode, PackageToolOptions) {
-        let (mode, flags): (PackageMode?, [PackageToolFlag]) = try Basic.parseOptions(arguments: args)
-    
-        let options = PackageToolOptions()
-        for flag in flags {
-            switch flag {
-            case .initMode(let value):
-                options.initMode = try InitMode(value)
-            case .showDepsMode(let value):
-                options.showDepsMode = try ShowDependenciesMode(value)
-            case .inputPath(let path):
-                options.inputPath = path
-            case .outputPath(let path):
-                options.outputPath = path
-            case .chdir(let path):
-                options.chdir = path
-            case .enableCodeCoverage:
-                options.xcodeprojOptions.enableCodeCoverage = true
-            case .xcc(let value):
-                options.xcodeprojOptions.flags.cCompilerFlags.append(value)
-            case .xld(let value):
-                options.xcodeprojOptions.flags.linkerFlags.append(value)
-            case .xswiftc(let value):
-                options.xcodeprojOptions.flags.swiftCompilerFlags.append(value)
-            case .buildPath(let path):
-                options.buildPath = path
-            case .enableNewResolver:
-                options.enableNewResolver = true
-            case .verbose(let amount):
-                options.verbosity += amount
-            case .colorMode(let mode):
-                options.colorMode = mode
-            case .xcconfigOverrides(let path):
-                options.xcodeprojOptions.xcconfigOverrides = path
-            case .packageName(let name):
-                options.packageName = name
-            case .editRevision(let rev):
-                options.editRevision = rev
-            case .editCheckoutBranch(let branch):
-                options.editCheckoutBranch = branch
-            case .editForceRemove:
-                options.editForceRemove = true
-            }
-        }
-        if let mode = mode {
-            return (mode, options)
-        }
-        else {
-            // FIXME: This needs to produce a properly quoted string, once we have such API.
-            throw OptionParserError.noCommandProvided(args.joined(separator: " "))
-        }
+        let editParser = parser.add(subparser: PackageMode.edit.rawValue, overview: "Put a package in editable mode")
+        binder.bind(
+            positional: editParser.add(
+                positional: "name", kind: String.self,
+                usage: "The name of the package to edit"),
+            to: { $0.editOptions.packageName = $1 })
+        binder.bind(
+            editParser.add(
+                option: "--revision", kind: String.self,
+                usage: "The revision to edit"),
+            editParser.add(
+                option: "--branch", kind: String.self,
+                usage: "The branch to create"),
+            to: {
+                $0.editOptions.revision = $1
+                $0.editOptions.checkoutBranch = $2})
+
+        binder.bind(
+            option: editParser.add(
+                option: "--path", kind: PathArgument.self,
+                usage: "Create or use the checkout at this path"),
+            to: { $0.editOptions.path = $1.path })
+
+        parser.add(subparser: PackageMode.clean.rawValue, overview: "Delete build artifacts")
+        parser.add(subparser: PackageMode.fetch.rawValue, overview: "")
+        parser.add(subparser: PackageMode.reset.rawValue, overview: "Reset the complete cache/build directory")
+
+        let resolveToolParser = parser.add(subparser: PackageMode.resolveTool.rawValue, overview: "")
+        binder.bind(
+            option: resolveToolParser.add(
+                option: "--type", kind: PackageToolOptions.ResolveToolMode.self,
+                usage: "text|json"),
+            to: { $0.resolveToolMode = $1 })
+
+        parser.add(subparser: PackageMode.update.rawValue, overview: "Update package dependencies")
+
+        let initPackageParser = parser.add(
+            subparser: PackageMode.initPackage.rawValue,
+            overview: "Initialize a new package")
+        binder.bind(
+            option: initPackageParser.add(
+                option: "--type", kind: InitPackage.PackageType.self,
+                usage: "empty|library|executable|system-module"),
+            to: { $0.initMode = $1 })
+
+        let uneditParser = parser.add(
+            subparser: PackageMode.unedit.rawValue,
+            overview: "Remove a package from editable mode")
+        binder.bind(
+            positional: uneditParser.add(
+                positional: "name", kind: String.self,
+                usage: "The name of the package to unedit"),
+            to: { $0.editOptions.packageName = $1 })
+        binder.bind(
+            option: uneditParser.add(
+                option: "--force", kind: Bool.self,
+                usage: "Unedit the package even if it has uncommited and unpushed changes."),
+            to: { $0.editOptions.shouldForceRemove = $1 })
+
+        let showDependenciesParser = parser.add(
+            subparser: PackageMode.showDependencies.rawValue,
+            overview: "Print the resolved dependency graph")
+        binder.bind(
+            option: showDependenciesParser.add(
+                option: "--format", kind: ShowDependenciesMode.self,
+                usage: "text|dot|json"),
+            to: {
+                $0.showDepsMode = $1})
+
+        let toolsVersionParser = parser.add(
+            subparser: PackageMode.toolsVersion.rawValue,
+            overview: "Manipulate tools version of the current package")
+        binder.bind(
+            option: toolsVersionParser.add(
+                option: "--set", kind: String.self,
+                usage: "Set tools version of package to the given value"),
+            to: { $0.toolsVersionMode = .set($1) })
+
+        binder.bind(
+            option: toolsVersionParser.add(
+                option: "--set-current", kind: Bool.self,
+                usage: "Set tools version of package to the current tools version in use"),
+            to: { if $1 { $0.toolsVersionMode = .setCurrent } })
+
+        let generateXcodeParser = parser.add(
+            subparser: PackageMode.generateXcodeproj.rawValue,
+            overview: "Generates an Xcode project")
+        binder.bind(
+            generateXcodeParser.add(
+                option: "--xcconfig-overrides", kind: PathArgument.self,
+                usage: "Path to xcconfig file"),
+            generateXcodeParser.add(
+                option: "--enable-code-coverage", kind: Bool.self,
+                usage: "Enable code coverage in the generated project"),
+            generateXcodeParser.add(
+                option: "--output", kind: PathArgument.self,
+                usage: "Path where the Xcode project should be generated"),
+            to: {
+                $0.xcodeprojOptions = XcodeprojOptions(
+                    flags: $0.buildFlags,
+                    xcconfigOverrides: $1?.path,
+                    isCodeCoverageEnabled: $2)
+                $0.outputPath = $3?.path
+            })
+
+        let resolveParser = parser.add(
+            subparser: PackageMode.resolve.rawValue,
+            overview: "Resolve package dependencies")
+        binder.bind(
+            positional: resolveParser.add(
+                positional: "name", kind: String.self, optional: true,
+                usage: "The name of the package to resolve"),
+            to: { $0.resolveOptions.packageName = $1 })
+
+        binder.bind(
+            resolveParser.add(
+                option: "--version", kind: String.self,
+                usage: "The version to resolve at"),
+            resolveParser.add(
+                option: "--branch", kind: String.self,
+                usage: "The branch to resolve at"),
+            resolveParser.add(
+                option: "--revision", kind: String.self,
+                usage: "The revision to resolve at"),
+            to: {
+                $0.resolveOptions.version = $1
+                $0.resolveOptions.branch = $2
+                $0.resolveOptions.revision = $3 })
+
+        binder.bind(
+            parser: parser,
+            to: { $0.mode = PackageMode(rawValue: $1)! })
     }
 }
 
-public func ==(lhs: PackageMode, rhs: PackageMode) -> Bool {
-    return lhs.description == rhs.description
+public class PackageToolOptions: ToolOptions {
+    private var _mode: PackageMode = .help
+    var mode: PackageMode {
+        get {
+            return shouldPrintVersion ? .version : _mode
+        }
+        set {
+            _mode = newValue
+        }
+    }
+
+    var describeMode: DescribeMode = .text
+    var initMode: InitPackage.PackageType = .library
+
+    var inputPath: AbsolutePath?
+    var showDepsMode: ShowDependenciesMode = .text
+
+    struct EditOptions {
+        var packageName: String?
+        var revision: String?
+        var checkoutBranch: String?
+        var path: AbsolutePath?
+        var shouldForceRemove = false
+    }
+
+    var editOptions = EditOptions()
+
+    var outputPath: AbsolutePath?
+    var xcodeprojOptions = XcodeprojOptions()
+
+    struct ResolveOptions {
+        var packageName: String?
+        var version: String?
+        var revision: String?
+        var branch: String?
+    }
+    var resolveOptions = ResolveOptions()
+
+    enum ResolveToolMode: String {
+        case text
+        case json
+    }
+    var resolveToolMode: ResolveToolMode = .text
+
+    enum ToolsVersionMode {
+        case display
+        case set(String)
+        case setCurrent
+    }
+    var toolsVersionMode: ToolsVersionMode = .display
+}
+
+public enum PackageMode: String, StringEnumArgument {
+    case clean
+    case describe
+    case dumpPackage = "dump-package"
+    case edit
+    case fetch
+    case generateXcodeproj = "generate-xcodeproj"
+    case initPackage = "init"
+    case reset
+    case resolve
+    case resolveTool = "resolve-tool"
+    case showDependencies = "show-dependencies"
+    case toolsVersion = "tools-version"
+    case unedit
+    case update
+    case version
+    case help
+
+    // PackageMode is not used as an argument; completions will be
+    // provided by the subparsers.
+    public static var completion: ShellCompletion = .none
+}
+
+extension InitPackage.PackageType: StringEnumArgument {
+    public static var completion: ShellCompletion {
+        return .values([
+            (empty.description, "generates an empty project"),
+            (library.description, "generates project for a dynamic library"),
+            (executable.description, "generates a project for a cli executable"),
+            (systemModule.description, "generates a project for a system module"),
+        ])
+    }
+}
+
+extension ShowDependenciesMode: StringEnumArgument {
+    public static var completion: ShellCompletion {
+        return .values([
+            (text.description, "list dependencies using text format"),
+            (dot.description, "list dependencies using dot format"),
+            (json.description, "list dependencies using JSON format"),
+        ])
+    }
+}
+
+extension DescribeMode: StringEnumArgument {
+    public static var completion: ShellCompletion {
+        return .values([
+            (text.rawValue, "describe using text format"),
+            (json.rawValue, "describe using JSON format"),
+        ])
+    }
+}
+
+extension PackageToolOptions.ResolveToolMode: StringEnumArgument {
+    static var completion: ShellCompletion {
+        return .values([
+            (text.rawValue, "resolve using text format"),
+            (json.rawValue, "resolve using JSON format"),
+        ])
+    }
+}
+
+extension PackageToolOperationError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .packageInEditableState:
+            return "The provided package is in editable state"
+        case .packageNotFound:
+            return "The provided package was not found"
+        case .insufficientOptions(let usage):
+            return usage
+        }
+    }
 }

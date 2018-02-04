@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -11,7 +11,7 @@
 import Basic
 
 /// Specifies a repository address.
-public struct RepositorySpecifier: Hashable {
+public struct RepositorySpecifier {
     /// The URL of the repository.
     public let url: String
 
@@ -19,7 +19,7 @@ public struct RepositorySpecifier: Hashable {
     public init(url: String) {
         self.url = url
     }
-    
+
     /// A unique identifier for this specifier.
     ///
     /// This identifier is suitable for use in a file system path, and
@@ -31,13 +31,35 @@ public struct RepositorySpecifier: Hashable {
         let basename = url.components(separatedBy: "/").last!
         return basename + "-" + String(url.hashValue)
     }
+}
 
+extension RepositorySpecifier: Hashable {
     public var hashValue: Int {
         return url.hashValue
     }
+    
+    public static func == (lhs: RepositorySpecifier, rhs: RepositorySpecifier) -> Bool {
+        return lhs.url == rhs.url
+    }
 }
-public func ==(lhs: RepositorySpecifier, rhs: RepositorySpecifier) -> Bool {
-    return lhs.url == rhs.url
+
+extension RepositorySpecifier: CustomStringConvertible {
+    public var description: String {
+        return url
+    }
+}
+
+extension RepositorySpecifier: JSONMappable, JSONSerializable {
+    public init(json: JSON) throws {
+        guard case .string(let url) = json else {
+            throw JSON.MapError.custom(key: nil, message: "expected string, got \(json)")
+        }
+        self.url = url
+    }
+
+    public func toJSON() -> JSON {
+        return .string(url)
+    }
 }
 
 /// A repository provider.
@@ -70,7 +92,11 @@ public protocol RepositoryProvider {
     ///   - destinationPath: The path at which to create the working copy; it is
     ///     expected to be non-existent when called.
     ///   - editable: The checkout is expected to be edited by users.
-    func cloneCheckout(repository: RepositorySpecifier, at sourcePath: AbsolutePath, to destinationPath: AbsolutePath, editable: Bool) throws
+    func cloneCheckout(
+        repository: RepositorySpecifier,
+        at sourcePath: AbsolutePath,
+        to destinationPath: AbsolutePath,
+        editable: Bool) throws
 
     /// Open a working repository copy.
     ///
@@ -107,6 +133,13 @@ public protocol Repository {
     /// - Precondition: The `tag` should be a member of `tags`.
     /// - Throws: If a error occurs accessing the named tag.
     func resolveRevision(tag: String) throws -> Revision
+
+    /// Resolve the revision for an identifier.
+    ///
+    /// The identifier can be a branch name or a revision identifier.
+    ///
+    /// - Throws: If the identifier can not be resolved.
+    func resolveRevision(identifier: String) throws -> Revision
 
     /// Fetch and update the repository from its remote.
     ///
@@ -170,7 +203,7 @@ public protocol WorkingCheckout {
 }
 
 /// A single repository revision.
-public struct Revision: Equatable {
+public struct Revision: Hashable {
     /// A precise identifier for a single repository revision, in a repository-specified manner.
     ///
     /// This string is intended to be opaque to the client, but understandable
@@ -181,7 +214,21 @@ public struct Revision: Equatable {
     public init(identifier: String) {
         self.identifier = identifier
     }
+
+    public var hashValue: Int {
+        return identifier.hashValue
+    }
+
+    public static func == (lhs: Revision, rhs: Revision) -> Bool {
+        return lhs.identifier == rhs.identifier
+    }
 }
-public func ==(lhs: Revision, rhs: Revision) -> Bool {
-    return lhs.identifier == rhs.identifier
+
+extension Revision: JSONMappable {
+    public init(json: JSON) throws {
+        guard case .string(let identifier) = json else {
+            throw JSON.MapError.custom(key: nil, message: "expected string, got \(json)")
+        }
+        self.init(identifier: identifier)
+    }
 }

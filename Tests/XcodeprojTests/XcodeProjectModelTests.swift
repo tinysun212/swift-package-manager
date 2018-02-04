@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2016 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -84,7 +84,7 @@ class XcodeProjectModelTests: XCTestCase {
         let srcFileRef1 = srcGroup.addFileReference(path: "Source File 1.swift")
         let srcFileRef2 = srcGroup.addFileReference(path: "Source File 2.swift")
         
-        // Add a target.
+        // Add a target that builds an executable.
         let target = proj.addTarget(productType: .executable, name: "My App")
         XCTAssert(target.name == "My App")
         XCTAssert(target.productType == .executable)
@@ -97,6 +97,12 @@ class XcodeProjectModelTests: XCTestCase {
         let srcBldFile2 = srcPhase.addBuildFile(fileRef: srcFileRef2)
         XCTAssert(srcBldFile1.fileRef === srcFileRef1)
         XCTAssert(srcBldFile2.fileRef === srcFileRef2)
+        
+        // Add an aggregate target (one that doesn't have a product type).
+        let aggTarget = proj.addTarget(productType: nil, name: "Aggregate")
+        XCTAssert(aggTarget.name == "Aggregate")
+        XCTAssert(aggTarget.productType == nil)
+        XCTAssert(aggTarget.buildPhases.isEmpty)
         
         let _ = proj.generatePlist()
     }
