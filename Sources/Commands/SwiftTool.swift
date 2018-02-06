@@ -267,6 +267,8 @@ public class SwiftTool<Options: ToolOptions> {
                 var action = sigaction()
               #if os(macOS)
                 action.__sigaction_u.__sa_handler = SIG_DFL
+              #elseif CYGWIN
+                action.sa_handler = SIG_DFL
               #else
                 action.__sigaction_handler = unsafeBitCast(
                     SIG_DFL,

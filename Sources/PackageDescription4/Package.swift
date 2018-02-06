@@ -10,6 +10,8 @@
 
 #if os(Linux)
 import Glibc
+#elseif os(Cygwin)
+import Newlib
 #else
 import Darwin.C
 #endif

@@ -1,4 +1,6 @@
+#if !CYGWIN
 import Dispatch
+#endif
 
 import Basic
 import POSIX
@@ -39,7 +41,9 @@ class HandlerTest {
 
     func run() {
         // Block.
+#if !CYGWIN
         dispatchMain()
+#endif
     }
 }
 

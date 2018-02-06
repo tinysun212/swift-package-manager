@@ -8,8 +8,10 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
-#if os(Linux) || CYGWIN
+#if os(Linux)
 import Glibc
+#elseif os(Cygwin)
+import Newlib
 #else
 import Darwin.C
 #endif

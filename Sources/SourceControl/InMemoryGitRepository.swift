@@ -9,7 +9,9 @@
 */
 
 import Basic
+#if !CYGWIN
 import Dispatch
+#endif
 import Utility
 import class Foundation.NSUUID
 

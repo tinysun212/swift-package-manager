@@ -40,6 +40,8 @@ public final class InterruptHandler {
         var action = sigaction()
       #if os(macOS)
         action.__sigaction_u.__sa_handler = signalHandler
+      #elseif CYGWIN
+        action.sa_handler = signalHandler
       #else
         action.__sigaction_handler = unsafeBitCast(
             signalHandler,

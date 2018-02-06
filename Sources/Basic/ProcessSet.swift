@@ -8,7 +8,9 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
+#if !CYGWIN
 import Dispatch
+#endif
 import Foundation
 
 public enum ProcessSetError: Swift.Error {

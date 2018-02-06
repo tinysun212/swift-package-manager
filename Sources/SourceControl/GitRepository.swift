@@ -14,10 +14,6 @@ import Dispatch
 #endif
 import Utility
 
-import func POSIX.getenv
-import enum POSIX.Error
-import class Foundation.ProcessInfo
-
 #if CYGWIN
 public class DispatchQueue {
   public init(label: String) {
@@ -33,19 +29,12 @@ public class DispatchQueue {
   public func sync<R>(execute: () throws -> R) throws -> R {
      return try execute()
   }
+
+  public func async<R>(execute: () -> R) -> R {
+     return execute()
+  }
 }
 #endif
-
-enum GitRepositoryProviderError: Swift.Error {
-    case gitCloneFailure(url: String, path: AbsolutePath)
-}
-extension GitRepositoryProviderError: CustomStringConvertible {
-    var description: String {
-        switch self {
-        case .gitCloneFailure(let url, let path):
-            return "Failed to clone \(url) to \(path)"
-        }
-    }
 
 public enum GitRepositoryProviderError: Swift.Error {
     case gitCloneFailure(errorOutput: String)
@@ -699,3 +688,4 @@ extension GitRepositoryProviderError: CustomStringConvertible {
         }
     }
 }
+

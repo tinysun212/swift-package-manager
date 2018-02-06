@@ -13,7 +13,27 @@ import class Foundation.ProcessInfo
 import enum POSIX.SystemError
 import func POSIX.getenv
 import libc
+#if !CYGWIN
 import Dispatch
+#endif
+
+#if CYGWIN
+public class DispatchQueue {
+  public init(label: String) {
+    lebel_ = label;
+  }
+
+  var lebel_ : String;
+
+  public func sync<R>(execute: () -> R) -> R {
+     return execute()
+  }
+
+  public func sync<R>(execute: () throws -> R) throws -> R {
+     return try execute()
+  }
+}
+#endif
 
 /// Process result data which is available after process termination.
 public struct ProcessResult: CustomStringConvertible {
@@ -234,7 +254,7 @@ public final class Process: ObjectIdentifierProtocol {
         }
 
         // Initialize the spawn attributes.
-      #if os(macOS)
+      #if os(macOS) || CYGWIN
         var attributes: posix_spawnattr_t? = nil
       #else
         var attributes = posix_spawnattr_t()
@@ -247,7 +267,7 @@ public final class Process: ObjectIdentifierProtocol {
         posix_spawnattr_setsigmask(&attributes, &noSignals)
 
         // Reset all signals to default behavior.
-      #if os(macOS)
+      #if os(macOS) || CYGWIN
         var mostSignals = sigset_t()
         sigfillset(&mostSignals)
         sigdelset(&mostSignals, SIGKILL)
@@ -277,7 +297,7 @@ public final class Process: ObjectIdentifierProtocol {
         posix_spawnattr_setflags(&attributes, Int16(flags))
 
         // Setup the file actions.
-      #if os(macOS)
+      #if os(macOS) || CYGWIN
         var fileActions: posix_spawn_file_actions_t? = nil
       #else
         var fileActions = posix_spawn_file_actions_t()
@@ -362,10 +382,26 @@ public final class Process: ObjectIdentifierProtocol {
 
             // Wait until process finishes execution.
             var exitStatus: Int32 = 0
+#if CYGWIN
+            var result : Int32 = -1
+            withUnsafeMutablePointer(to: &exitStatus) {
+                exitStatusPtr in
+                let exitStatusPtrWrapper = __wait_status_ptr_t(__int_ptr: exitStatusPtr)
+                result = waitpid(processID, exitStatusPtrWrapper, 0)
+            }
+            while result == -1 && errno == EINTR {
+                withUnsafeMutablePointer(to: &exitStatus) {
+                    exitStatusPtr in
+                    let exitStatusPtrWrapper = __wait_status_ptr_t(__int_ptr: exitStatusPtr)
+                    result = waitpid(processID, exitStatusPtrWrapper, 0)
+                }
+            }
+#else
             var result = waitpid(processID, &exitStatus, 0)
             while result == -1 && errno == EINTR {
                 result = waitpid(processID, &exitStatus, 0)
             }
+#endif
             if result == -1 {
                 throw SystemError.waitpid(errno)
             }
