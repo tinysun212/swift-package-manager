@@ -212,7 +212,7 @@ class Target(object):
         #
         # FIXME: The -j doesn't belong here, and should move into the
         # 'swift' tool.
-        other_args = ['-I/usr/include', '-DCYGWIN', '-Onone', '-j%d' % g_num_cpus] + self.swiftflags
+        other_args = ['-I/usr/include', '-DCYGWIN', '-Onone', '-j1'] + self.swiftflags
         if platform.system() == 'Darwin':
             other_args.extend(["-target", "x86_64-apple-macosx10.10"])
         if args.sysroot:
@@ -279,7 +279,7 @@ class Target(object):
         if platform.system() == 'Darwin':
             common_args.extend(["-arch", "x86_64", "-mmacosx-version-min=10.10"])
 
-        if args.sysroot:
+        if args.sysroot and not platform.system().startswith('CYGWIN'):
             common_args.extend(["-isysroot", args.sysroot])
 
         common_args.extend(["-g", "-O0", "-MD", "-MT", "dependencies", "-MF"])
@@ -673,7 +673,7 @@ def process_runtime_libraries(build, args, lib_path):
         cmd = [args.swiftc_path, "-Xlinker", "-shared", "-o", runtime_lib_path,
                "-Xlinker", "--whole-archive",
                "-Xlinker", input_lib_path,
-               "-Xlinker", "--no-whole-archive",
+               "-Xlinker", "--no-whole-archive", "-lswiftNewlib", "-lswiftSwiftOnoneSupport",
                "-Xlinker", "-rpath=$ORIGIN/../linux"]
 
         # Add link flags for Cygwin
@@ -896,6 +896,8 @@ def main():
     # Compute the build paths.
     if platform.system() == 'Darwin':
         build_target = "x86_64-apple-macosx10.10"
+    elif platform.system().startswith('CYGWIN'):
+        build_target = "x86_64-unknown-cygwin"
     else:
         build_target = 'x86_64-unknown-linux'
 

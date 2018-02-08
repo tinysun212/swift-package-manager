@@ -110,6 +110,15 @@ public struct UserToolchain: Toolchain {
             throw Error.invalidToolchain(problem: "could not find `clang` at expected path \(clangCompiler.asString)")
         }
 
+#if CYGWIN
+        self.extraSwiftCFlags = [
+            "-target", destination.target,
+        ] + destination.extraSwiftCFlags
+
+        self.extraCCFlags = [
+            "-target", destination.target
+        ] + destination.extraCCFlags
+#else
         self.extraSwiftCFlags = [
             "-target", destination.target,
             "-sdk", destination.sdk.asString
@@ -119,6 +128,7 @@ public struct UserToolchain: Toolchain {
             "-target", destination.target,
             "--sysroot", destination.sdk.asString
         ] + destination.extraCCFlags
+#endif
 
         manifestResources = UserManifestResources(
             swiftCompiler: swiftCompiler,

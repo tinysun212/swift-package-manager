@@ -278,7 +278,11 @@ public final class SwiftTargetDescription {
         args += buildParameters.toolchain.extraSwiftCFlags
         args += buildParameters.swiftCompilerFlags
         args += optimizationArguments
+#if CYGWIN
+        args += ["-j1", "-DSWIFT_PACKAGE"]
+#else
         args += ["-j\(SwiftCompilerTool.numThreads)", "-DSWIFT_PACKAGE"]
+#endif
         args += additionalFlags
         args += moduleCacheArgs
         return args

@@ -115,6 +115,16 @@ public struct Destination {
             extraSwiftCFlags: commonArgs,
             extraCPPFlags: ["-lc++"]
         )
+      #elseif CYGWIN
+        return Destination(
+            target: hostTargetTriple,
+            sdk: .root,
+            binDir: binDir,
+            dynamicLibraryExtension: "dll",
+            extraCCFlags: [],
+            extraSwiftCFlags: [],
+            extraCPPFlags: ["-lstdc++"]
+        )
       #else
         return Destination(
             target: hostTargetTriple,
@@ -151,6 +161,12 @@ public struct Destination {
 
     /// Target triple for the host system.
     private static let hostTargetTriple = "x86_64-apple-macosx10.10"
+  #elseif CYGWIN
+    /// Returns the host's dynamic library extension.
+    public static let hostDynamicLibraryExtension = "dll"
+
+    /// Target triple for the host system.
+    private static let hostTargetTriple = "x86_64-unknown-cygwin"
   #else
     /// Returns the host's dynamic library extension.
     public static let hostDynamicLibraryExtension = "so"

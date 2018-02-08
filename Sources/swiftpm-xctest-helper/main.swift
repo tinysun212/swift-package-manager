@@ -132,6 +132,12 @@ do {
     exit(1)
 }
 
+#elseif CYGWIN
+
+import func Newlib.exit
+print("Only OSX supported.")
+exit(1)
+
 #else
 
 import func Glibc.exit

@@ -299,9 +299,11 @@ public final class ManifestLoader: ManifestLoaderProtocol {
       #if os(macOS)
         cmd += ["-target", "x86_64-apple-macosx10.10"]
       #endif
+      #if !CYGWIN
         if let sdkRoot = resources.sdkRoot ?? self.sdkRoot() {
             cmd += ["-sdk", sdkRoot.asString]
         }
+      #endif
         return cmd
     }
 
