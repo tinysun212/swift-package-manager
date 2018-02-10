@@ -496,7 +496,7 @@ public class BuildPlan {
              }
         }
 
-      #if os(Linux)
+      #if os(Linux) || CYGWIN
         // FIXME: Create a target for LinuxMain file on linux.
         // This will go away once it is possible to auto detect tests.
         let testProducts = graph.products.filter({ $0.type == .test })
@@ -635,7 +635,7 @@ public class BuildPlan {
             }
         }
 
-      #if os(Linux)
+      #if os(Linux) || CYGWIN
         if product.type == .test {
             product.linuxMainTarget.map({ staticTargets.append($0) })
         }
