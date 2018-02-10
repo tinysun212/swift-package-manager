@@ -8,7 +8,9 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 import XCTest
+#if !CYGWIN
 import Dispatch
+#endif
 
 import Basic
 import PackageGraph

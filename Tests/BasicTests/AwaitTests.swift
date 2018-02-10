@@ -9,7 +9,9 @@
 */
 
 import XCTest
+#if !CYGWIN
 import Dispatch
+#endif
 
 import Basic
 

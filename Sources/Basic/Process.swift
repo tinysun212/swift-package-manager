@@ -32,6 +32,14 @@ public class DispatchQueue {
   public func sync<R>(execute: () throws -> R) throws -> R {
      return try execute()
   }
+
+  public func async<R>(execute: () -> R) -> R {
+     return execute()
+  }
+
+  public class func global() -> DispatchQueue {
+    return DispatchQueue(label:"")
+  }
 }
 #endif
 
