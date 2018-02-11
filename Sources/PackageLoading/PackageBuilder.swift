@@ -915,7 +915,7 @@ public final class PackageBuilder {
         // Collect all test targets.
         let testModules = targets.filter({ target in
             guard target.type == .test else { return false }
-          #if os(Linux)
+          #if os(Linux) || CYGWIN
             // FIXME: Ignore C language test targets on linux for now.
             if target is ClangTarget {
                 diagnostics.emit(data: PackageBuilderDiagnostics.UnsupportedCTarget(

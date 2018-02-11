@@ -223,7 +223,12 @@ public class RepositoryManager {
         skipUpdate: Bool = false,
         completion: @escaping LookupCompletion
     ) {
-        operationQueue.addOperation {
+#if CYGWIN
+          func addOperationToQueue<R>(_ execute: () -> R) -> R { return serialQueue.sync(execute:execute) }
+#else
+          let addOperationToQueue = operationQueue.addOperation
+#endif
+          addOperationToQueue {
             // First look for the handle.
             let handle = self.getHandle(repository: repository)
             // Dispatch the action we want to take on the serial queue of the handle.

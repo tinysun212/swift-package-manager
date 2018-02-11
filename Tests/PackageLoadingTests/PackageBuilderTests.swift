@@ -496,7 +496,7 @@ class PackageBuilderTests: XCTestCase {
 
             result.checkProduct("MyPackage") { _ in }
 
-          #if os(Linux)
+          #if os(Linux) || CYGWIN
             result.checkDiagnostic("ignoring target 'MyPackageTests' in package 'MyPackage'; C language in tests is not yet supported")
           #elseif os(macOS)
             result.checkProduct("MyPackagePackageTests") { _ in }

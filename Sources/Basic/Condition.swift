@@ -43,8 +43,10 @@ public struct Condition {
 
     /// A helper method to execute the given body while condition is locked.
     public func whileLocked<T>(_ body: () throws -> T) rethrows -> T {
+#if !CYGWIN
         _condition.lock()
         defer { _condition.unlock() }
+#endif
         return try body()
     }
 }
